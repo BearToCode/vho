@@ -1,6 +1,11 @@
 [gd_scene format=3 uid="uid://d13f1e2xvj00g"]
 
+[ext_resource type="PackedScene" uid="uid://cn2qtnumd5d4q" path="res://scenes/little_bird.tscn" id="1_pq8q7"]
+
 [node name="Root" type="Node3D" unique_id=110927703]
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=179344576]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1)
+transform = Transform3D(-0.99898136, 0, 0.04512635, 0, 1, 0, -0.04512635, 0, -0.99898136, -1.5183272, 5.248467, -3.5209866)
+
+[node name="little-bird" parent="." unique_id=2044621016 instance=ExtResource("1_pq8q7")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.5690274, 0.72865963, 1.8462739)
