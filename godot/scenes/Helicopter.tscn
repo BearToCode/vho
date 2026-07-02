@@ -283,7 +283,7 @@ shadow_mesh = SubResource("ArrayMesh_0jihx")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2329726, 0)
 mass = 700.0
 center_of_mass_mode = 1
-center_of_mass = Vector3(0, 0.5, 0)
+center_of_mass = Vector3(0, 0.5, -0.05)
 inertia = Vector3(750, 1100, 1450)
 script = ExtResource("1_th5ef")
 fuselage = NodePath(".")
@@ -327,7 +327,6 @@ metadata/_custom_type_script = "uid://c21aavpom2j"
 transform = Transform3D(-4.371139e-08, 1, 0, -1, -4.371139e-08, 0, 0, 0, 1, 0, 0.66702735, 5.6)
 mass = 10.0
 center_of_mass_mode = 1
-center_of_mass = Vector3(0, 0, -5.6)
 inertia = Vector3(1.8, 3.6, 1.8)
 
 [node name="TailRotorMesh" type="MeshInstance3D" parent="TailRotorBody" unique_id=702678362]
@@ -342,5 +341,5 @@ script = ExtResource("4_8ov7f")
 radius = 0.8
 chord = 0.1
 power = 0.0
-pitch = 0.055200612200849986
+pitch = 0.05520061220084998
 metadata/_custom_type_script = "uid://c21aavpom2j"

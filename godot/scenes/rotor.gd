@@ -37,9 +37,9 @@ func _physics_process(_delta: float) -> void:
 	var torque = compute_rotor_torque(omega, inflow_ratio, thrust_coefficient)
 	var force = compute_rotor_force(omega, thrust_coefficient)
 		
-	rotor.apply_torque(torque * rotor.basis.inverse())
-	fuselage.apply_torque(-torque * rotor.basis.inverse())
-	fuselage.apply_force(force * rotor.basis.inverse())
+	rotor.apply_torque(torque)
+	fuselage.apply_torque(-torque)
+	fuselage.apply_force(force)
 	
 	
 func get_local_velocity(state: PhysicsDirectBodyState3D) -> Vector3:
@@ -77,7 +77,7 @@ func compute_rotor_torque(
 	
 	print("torque_net: %s" % [torque_net])
 	
-	return fuselage.basis.y * torque_net
+	return rotor.global_transform.basis.y * torque_net
 
 func compute_rotor_force(
 	omega: float, 
@@ -86,4 +86,4 @@ func compute_rotor_force(
 	var thrust = air_density * PI * pow(radius, 2) * pow(omega * radius, 2) * \
 				 thrust_coefficient
 	print("thrust: %s, omega: %s" % [thrust, omega])
-	return fuselage.global_transform.basis.y * thrust
+	return rotor.global_transform.basis.y * thrust
