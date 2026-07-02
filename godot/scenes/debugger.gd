@@ -7,7 +7,7 @@ extends Helicopter
 func _ready() -> void:
 	var draw = Draw3D.new()
 	add_child(draw)
-	draw.cube(tail_rotor_position, Basis.IDENTITY.scaled(Vector3.ONE) * 0.1)
+	#draw.cube(tail_rotor_position, Basis.IDENTITY.scaled(Vector3.ONE) * 0.1)
 	pass
 
 
