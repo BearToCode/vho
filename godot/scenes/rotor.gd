@@ -73,4 +73,5 @@ func compute_rotor_force(
 ) -> Vector3:
 	var thrust = air_density * PI * pow(radius, 2) * pow(omega * radius, 2) * \
 				 thrust_coefficient
+	print("thrust: %s, omega: %s" % [thrust, omega])
 	return self.global_transform.basis.y * thrust
