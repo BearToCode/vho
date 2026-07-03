@@ -8,7 +8,7 @@ size = Vector3(18, 1, 18)
 [node name="Root" type="Node3D" unique_id=110927703]
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=179344576]
-transform = Transform3D(-0.8747621, -0.2023743, 0.44026804, 1.09892706e-10, 0.9086072, 0.41765183, -0.48455268, 0.36534598, -0.7948151, 2.098836, 6.8449426, -6.9326315)
+transform = Transform3D(-0.8747621, -0.2023743, 0.44026804, 1.09892706e-10, 0.9086072, 0.4176518, -0.48455268, 0.36534598, -0.7948151, 10.440953, 13.901903, -16.973423)
 current = true
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_gxo8o")]

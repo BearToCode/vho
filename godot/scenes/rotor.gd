@@ -1,4 +1,4 @@
-extends HingeJoint3D
+extends RigidBody3D
 
 class_name Rotor
 
@@ -15,9 +15,9 @@ class_name Rotor
 @export_custom(PROPERTY_HINT_NONE, "suffix:W") var power: float = 10.0
 @export_range(-15.0/180*PI, 15.0/180*PI, 0.001, "suffix:rad") var pitch: float = 0.0
 
+@export var fuselage: RigidBody3D
+
 @onready var solidity: float = (blade_count * chord) / (PI * radius)
-@onready var fuselage: RigidBody3D = get_node(node_a)
-@onready var rotor: RigidBody3D = get_node(node_b)
 
 
 func _ready() -> void:
@@ -37,25 +37,13 @@ func _physics_process(_delta: float) -> void:
 	var torque = compute_rotor_torque(omega, inflow_ratio, thrust_coefficient)
 	var force = compute_rotor_force(omega, thrust_coefficient)
 		
-	rotor.apply_torque(torque)
+	self.apply_torque(torque)
 	fuselage.apply_torque(-torque)
 	fuselage.apply_force(force)
 	
 	
-func get_local_velocity(state: PhysicsDirectBodyState3D) -> Vector3:
-	var b = state.transform.basis
-	var v_len = state.linear_velocity.length()
-	var v_nor = state.linear_velocity.normalized()
-
-	var vel : Vector3
-	vel.x = b.x.dot(v_nor) * v_len
-	vel.y = b.y.dot(v_nor) * v_len
-	vel.z = b.z.dot(v_nor) * v_len
-	
-	return vel
-	
 func get_rotation_velocity() -> float:
-	var global_angular_velocity = rotor.angular_velocity
+	var global_angular_velocity = self.angular_velocity
 	var omega = global_angular_velocity.length()
 	return omega
 	
@@ -75,9 +63,9 @@ func compute_rotor_torque(
 	var torque_net = torque_motor - torque_drag
 	torque_net = clamp(torque_net, -MAX_TORQUE, MAX_TORQUE)
 	
-	print("torque_net: %s" % [torque_net])
+	# print("torque_net: %s" % [torque_net])
 	
-	return rotor.global_transform.basis.y * torque_net
+	return self.global_transform.basis.y * torque_net
 
 func compute_rotor_force(
 	omega: float, 
@@ -85,5 +73,4 @@ func compute_rotor_force(
 ) -> Vector3:
 	var thrust = air_density * PI * pow(radius, 2) * pow(omega * radius, 2) * \
 				 thrust_coefficient
-	print("thrust: %s, omega: %s" % [thrust, omega])
-	return rotor.global_transform.basis.y * thrust
+	return self.global_transform.basis.y * thrust
