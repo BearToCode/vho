@@ -2,28 +2,24 @@
 
 [ext_resource type="PackedScene" uid="uid://cn2qtnumd5d4q" path="res://scenes/Helicopter.tscn" id="1_gxo8o"]
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_6pmnr"]
-size = Vector3(100, 1, 100)
+[sub_resource type="BoxShape3D" id="BoxShape3D_qa2gp"]
+size = Vector3(32, 1, 32)
 
 [sub_resource type="BoxMesh" id="BoxMesh_6pmnr"]
-size = Vector3(100, 1, 100)
+size = Vector3(32, 1, 32)
 
 [node name="Root" type="Node3D" unique_id=110927703]
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_gxo8o")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6978245, 0)
-
-[node name="Camera3D" type="Camera3D" parent="Helicopter" unique_id=179344576]
-transform = Transform3D(-0.8747621, -0.2023743, 0.44026804, 1.09892706e-10, 0.9086072, 0.4176518, -0.48455268, 0.36534598, -0.7948151, 2.0586796, 1.7421646, -1.1934166)
-current = true
-
-[node name="Terrain" type="StaticBody3D" parent="." unique_id=1443540732]
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain" unique_id=164313193]
-shape = SubResource("BoxShape3D_6pmnr")
-
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain" unique_id=789635173]
-mesh = SubResource("BoxMesh_6pmnr")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.018649101, 1.7690833, -0.0032052994)
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1265862991]
 transform = Transform3D(-0.9935215, 0.07382763, -0.086398765, 0.032866664, 0.9144206, 0.40342906, 0.10878902, 0.39797568, -0.91092294, 0, 7.126119, -8.396711)
+
+[node name="StaticBody3D" type="StaticBody3D" parent="." unique_id=1557076821]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D" unique_id=82662189]
+shape = SubResource("BoxShape3D_qa2gp")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="StaticBody3D" unique_id=1436240039]
+mesh = SubResource("BoxMesh_6pmnr")

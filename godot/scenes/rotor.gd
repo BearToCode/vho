@@ -14,37 +14,50 @@ class_name Rotor
 @export_group("Inputs")
 @export_custom(PROPERTY_HINT_NONE, "suffix:W") var power: float = 10.0
 @export_range(-15.0/180*PI, 15.0/180*PI, 0.001, "suffix:rad") var pitch: float = 0.0
+@export var main_rotor_controls = false;
+@export_range(-10.0/180*PI, 10.0/180*PI, 0.001, "suffix:rad") var lateral_cyclic: float = 0.0
+@export_range(-10.0/180*PI, 10.0/180*PI, 0.001, "suffix:rad") var longitudinal_cyclic: float = 0.0
 
 @export var fuselage: RigidBody3D
 
+@onready var base_transform = self.transform
 @onready var solidity: float = (blade_count * chord) / (PI * radius)
 
+func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
+	if not main_rotor_controls:
+		return
+		
+	var own_yaw = state.transform.basis.get_euler().y
+	var tilt_z = Basis(Vector3.BACK, lateral_cyclic)
+	var tilt_x = Basis(Vector3.RIGHT, longitudinal_cyclic)
+	state.transform.basis = fuselage.global_transform.basis * tilt_z * tilt_x
+	state.transform = state.transform.rotated_local(Vector3.UP, own_yaw)
 
-func _ready() -> void:
-	pass
-
-func _process(_delta: float) -> void:
-	pass
-
-func _physics_process(_delta: float) -> void:	
+	
+func _physics_process(_delta: float) -> void:
 	var omega = get_rotation_velocity()
 	
 	var inflow_ratio = (solidity * lift_curve) / 16 * \
-					   (sqrt(1 + (32 * pitch) / (solidity * lift_curve)) - 1)
+					   (sqrt(1 + (32 * absf(pitch)) / (solidity * lift_curve)) - 1)
 	var thrust_coefficient = solidity * lift_curve / 2 * \
-							 (pitch / 3 - inflow_ratio / 2)
+							 (absf(pitch) / 3 - inflow_ratio / 2)
 	
 	var torque = compute_rotor_torque(omega, inflow_ratio, thrust_coefficient)
 	var force = compute_rotor_force(omega, thrust_coefficient)
-		
+	
+	print(force)
+	
+	force *= signf(pitch)
+	
 	self.apply_torque(torque)
 	fuselage.apply_torque(-torque)
-	fuselage.apply_force(force)
+	fuselage.apply_force(force, self.global_position - fuselage.global_position)
 	
 	
 func get_rotation_velocity() -> float:
 	var global_angular_velocity = self.angular_velocity
-	var omega = global_angular_velocity.length()
+	var global_orientation = self.global_transform.basis.y
+	var omega = global_angular_velocity.dot(global_orientation)
 	return omega
 	
 func compute_rotor_torque(
@@ -62,9 +75,7 @@ func compute_rotor_torque(
 	const MAX_TORQUE = 10_000
 	var torque_net = torque_motor - torque_drag
 	torque_net = clamp(torque_net, -MAX_TORQUE, MAX_TORQUE)
-	
-	# print("torque_net: %s" % [torque_net])
-	
+		
 	return self.global_transform.basis.y * torque_net
 
 func compute_rotor_force(
@@ -73,5 +84,5 @@ func compute_rotor_force(
 ) -> Vector3:
 	var thrust = air_density * PI * pow(radius, 2) * pow(omega * radius, 2) * \
 				 thrust_coefficient
-	print("thrust: %s, omega: %s" % [thrust, omega])
+	print(self.global_transform.basis.y)
 	return self.global_transform.basis.y * thrust
