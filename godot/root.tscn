@@ -11,15 +11,19 @@ size = Vector3(32, 1, 32)
 [node name="Root" type="Node3D" unique_id=110927703]
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_gxo8o")]
+collective = 0.25
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.018649101, 1.7690833, -0.0032052994)
+
+[node name="Camera3D" type="Camera3D" parent="Helicopter" unique_id=1430266193]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.018649101, 6.1564636, 11.558181)
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1265862991]
 transform = Transform3D(-0.9935215, 0.07382763, -0.086398765, 0.032866664, 0.9144206, 0.40342906, 0.10878902, 0.39797568, -0.91092294, 0, 7.126119, -8.396711)
 
-[node name="StaticBody3D" type="StaticBody3D" parent="." unique_id=1557076821]
+[node name="Terrain" type="StaticBody3D" parent="." unique_id=1557076821]
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D" unique_id=82662189]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain" unique_id=82662189]
 shape = SubResource("BoxShape3D_qa2gp")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="StaticBody3D" unique_id=1436240039]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain" unique_id=1436240039]
 mesh = SubResource("BoxMesh_6pmnr")

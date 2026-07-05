@@ -1,8 +1,11 @@
 [gd_scene format=4 uid="uid://cn2qtnumd5d4q"]
 
-[ext_resource type="Script" uid="uid://bsms4rnk3cq0o" path="res://helicopter.gd" id="1_th5ef"]
 [ext_resource type="Texture2D" uid="uid://b4t64jfq5x4a4" path="res://models/little-bird_helicp.png" id="1_xknah"]
-[ext_resource type="Script" uid="uid://c21aavpom2j" path="res://scenes/rotor.gd" id="4_8ov7f"]
+
+[sub_resource type="GDScript" id="GDScript_yt3et"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_6pmnr"]
+size = Vector3(4, 3.5570068, 8.723511)
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ph5h3"]
 resource_name = "base"
@@ -196,9 +199,6 @@ _surfaces = [{
 blend_shape_mode = 0
 shadow_mesh = SubResource("ArrayMesh_ypdkw")
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_6pmnr"]
-size = Vector3(4, 2.7080078, 8.723511)
-
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_166mf"]
 resource_name = "helice 1"
 cull_mode = 2
@@ -279,79 +279,28 @@ _surfaces = [{
 blend_shape_mode = 0
 shadow_mesh = SubResource("ArrayMesh_0jihx")
 
-[node name="Node3D" type="Node3D" unique_id=1857728157]
-
-[node name="Fuselage" type="RigidBody3D" parent="." unique_id=560815432 node_paths=PackedStringArray("main_rotor", "tail_rotor")]
+[node name="TailRotor" type="Helicopter" unique_id=908961530 node_paths=PackedStringArray("main_rotor_mesh", "tail_rotor_mesh")]
+main_rotor_mesh = NodePath("MainRotorMesh")
+tail_rotor_mesh = NodePath("TailRotorMesh")
+rotation_order = 4
 mass = 700.0
+gravity_scale = 0.0
 center_of_mass_mode = 1
-angular_damp = 5.0
-script = ExtResource("1_th5ef")
-main_rotor = NodePath("../MainRotor")
-tail_rotor = NodePath("../TailRotor")
-center_of_mass_height = 0.667
-vertical_stabilizer_area = 0.8
-vertical_stabilizer_lever = 5.5
-metadata/_custom_type_script = "uid://bsms4rnk3cq0o"
+inertia = Vector3(1000, 1200, 800)
+script = SubResource("GDScript_yt3et")
 
-[node name="FuselageMesh" type="MeshInstance3D" parent="Fuselage" unique_id=869195679]
-transform = Transform3D(-1, 0, 1.509958e-07, 0, 1, 0, -1.509958e-07, 0, -1, 0.01058303, -0.9363549, -1)
-mesh = SubResource("ArrayMesh_rcddv")
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Fuselage" unique_id=1802460471]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.1459961, 1.7914429)
-visible = false
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1802460471]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0.018351007, 1.643693, 1.7828786)
 shape = SubResource("BoxShape3D_6pmnr")
 
-[node name="Camera3D" type="Camera3D" parent="Fuselage" unique_id=127607024]
-transform = Transform3D(1, 0, 0, 0, 0.929712, 0.36828774, 0, -0.36828783, 0.92971194, 0, 6, 10)
-current = true
+[node name="FuselageMesh" type="MeshInstance3D" parent="." unique_id=869195679]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0.018350761, 0.2725339, -1.0318644)
+mesh = SubResource("ArrayMesh_rcddv")
 
-[node name="MainRotorHinge" type="Generic6DOFJoint3D" parent="Fuselage" unique_id=1317889073]
-transform = Transform3D(0.99999994, 0, 0, 0, 0.99999994, 0, 0, 0, 1, 0, 1.6670275, 0)
-node_a = NodePath("..")
-node_b = NodePath("../../MainRotor")
-angular_limit_y/enabled = false
-angular_motor_x/target_velocity = 0.017453292
-
-[node name="TailRotorHinge" type="HingeJoint3D" parent="Fuselage" unique_id=290089822]
-transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 0.66702735, 5.6)
-node_a = NodePath("..")
-node_b = NodePath("../../TailRotor")
-
-[node name="MainRotor" type="RigidBody3D" parent="." unique_id=803286846 node_paths=PackedStringArray("fuselage")]
-transform = Transform3D(0.99999994, 0, 0, 0, 0.99999994, 0, 0, 0, 1, 0, 1.6670275, 0)
-rotation_order = 4
-mass = 100.0
-center_of_mass_mode = 1
-inertia = Vector3(452, 905, 452)
-script = ExtResource("4_8ov7f")
-radius = 4.17
-blade_count = 6
-chord = 0.54
-power = 220000.0
-pitch = 0.21520061220084996
-main_rotor_controls = true
-fuselage = NodePath("../Fuselage")
-metadata/_custom_type_script = "uid://c21aavpom2j"
-
-[node name="MainRotorMesh" type="MeshInstance3D" parent="MainRotor" unique_id=1190866448]
-transform = Transform3D(0.9800666, 0, 0.19866931, 0, 1, 0, -0.19866931, 0, 0.9800666, 0, 0.24671221, 0)
+[node name="MainRotorMesh" type="MeshInstance3D" parent="." unique_id=1190866448]
+transform = Transform3D(-0.9999999, 0, -8.742277e-08, 0, 0.9999999, 0, 8.742277e-08, 0, -1, 0.018350847, 3.0887182, -0.031864405)
 mesh = SubResource("ArrayMesh_wu7ks")
 
-[node name="TailRotor" type="RigidBody3D" parent="." unique_id=1002015220 node_paths=PackedStringArray("fuselage")]
-transform = Transform3D(-4.371139e-08, 1, 0, -1, -4.371139e-08, 0, 0, 0, 1, 0, 0.66702735, 5.6)
-rotation_order = 4
-mass = 6.0
-center_of_mass_mode = 1
-inertia = Vector3(1.8, 3.6, 1.8)
-script = ExtResource("4_8ov7f")
-radius = 0.8
-chord = 0.1
-power = 8000.0
-pitch = 0.05020061220084998
-fuselage = NodePath("../Fuselage")
-metadata/_custom_type_script = "uid://c21aavpom2j"
-
-[node name="TailRotorMesh" type="MeshInstance3D" parent="TailRotor" unique_id=702678362]
-transform = Transform3D(-4.371139e-08, -0.9800666, 0.19866933, 1, -4.284007e-08, 8.684112e-09, 0, 0.19866933, 0.9800666, 0, -0.12929681, 0)
+[node name="TailRotorMesh" type="MeshInstance3D" parent="." unique_id=702678362]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, -0.018350638, 1.8136483, 5.5736427)
 mesh = SubResource("ArrayMesh_kacjk")
