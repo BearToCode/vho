@@ -2,11 +2,16 @@
   "python-envs.defaultEnvManager": "ms-python.python:conda",
   "python-envs.defaultPackageManager": "ms-python.python:conda",
   "cSpell.words": [
+    "Autodiff",
     "Autostabiliser",
     "Budiyono",
+    "gdextension",
     "Kary",
     "Lesmana",
+    "relu",
     "Sudiyanto",
-    "Thanapalan"
-  ]
+    "Thanapalan",
+    "Wgpu"
+  ],
+  "godotTools.editorPath.godot4": "q:\\Program Files\\Godot\\Godot_v4.7-stable_win64.exe"
 }

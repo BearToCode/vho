@@ -1,29 +1,52 @@
 [gd_scene format=3 uid="uid://d13f1e2xvj00g"]
 
 [ext_resource type="PackedScene" uid="uid://cn2qtnumd5d4q" path="res://scenes/Helicopter.tscn" id="1_gxo8o"]
+[ext_resource type="PackedScene" uid="uid://bricnm2a2h4ag" path="res://scenes/Ring.tscn" id="2_24d08"]
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_qa2gp"]
-size = Vector3(32, 1, 32)
+[sub_resource type="Environment" id="Environment_6pmnr"]
+background_mode = 1
+background_color = Color(0.48487204, 0.610455, 0.68117326, 1)
 
-[sub_resource type="BoxMesh" id="BoxMesh_6pmnr"]
-size = Vector3(32, 1, 32)
+[node name="Root" type="Game" unique_id=1802170229 node_paths=PackedStringArray("track", "helicopter")]
+track = NodePath("Track")
+helicopter = NodePath("Helicopter")
 
-[node name="Root" type="Node3D" unique_id=110927703]
+[node name="Agent" type="Agent" parent="." unique_id=326518141 node_paths=PackedStringArray("game")]
+game = NodePath("..")
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_gxo8o")]
-collective = 0.25
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.018649101, 1.7690833, -0.0032052994)
+can_sleep = false
+script = null
 
 [node name="Camera3D" type="Camera3D" parent="Helicopter" unique_id=1430266193]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.018649101, 6.1564636, 11.558181)
+transform = Transform3D(1, 0, 0, 0, 0.9970813, 0.07634771, 0, -0.07634771, 0.9970813, -0.018649101, 7.771945, 13.805707)
+current = true
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1265862991]
-transform = Transform3D(-0.9935215, 0.07382763, -0.086398765, 0.032866664, 0.9144206, 0.40342906, 0.10878902, 0.39797568, -0.91092294, 0, 7.126119, -8.396711)
+transform = Transform3D(-0.78630626, 0.2728267, -0.5543358, 0.032866668, 0.9144206, 0.403429, 0.6169622, 0.2989995, -0.72798145, -7.651084, 7.126119, -8.396711)
+shadow_enabled = true
+directional_shadow_mode = 1
+directional_shadow_split_1 = 0.194
+directional_shadow_blend_splits = true
+directional_shadow_fade_start = 0.687
 
-[node name="Terrain" type="StaticBody3D" parent="." unique_id=1557076821]
+[node name="Track" type="Track" parent="." unique_id=1399107581 node_paths=PackedStringArray("rings")]
+rings = [NodePath("Ring1"), NodePath("Ring2"), NodePath("Ring3"), NodePath("Ring4"), NodePath("Ring5")]
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain" unique_id=82662189]
-shape = SubResource("BoxShape3D_qa2gp")
+[node name="Ring1" parent="Track" unique_id=2073540714 instance=ExtResource("2_24d08")]
+transform = Transform3D(-1, 0, 8.742278e-08, 0, 1, 0, -8.742278e-08, 0, -1, 0, 13.1584, -40.070076)
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain" unique_id=1436240039]
-mesh = SubResource("BoxMesh_6pmnr")
+[node name="Ring2" parent="Track" unique_id=353498744 instance=ExtResource("2_24d08")]
+transform = Transform3D(0.9817139, 0, -0.19036253, 0, 1, 0, 0.19036253, 0, 0.9817139, 12.228359, 18.21275, -100.80272)
+
+[node name="Ring3" parent="Track" unique_id=2049613428 instance=ExtResource("2_24d08")]
+transform = Transform3D(0.6751286, 0, -0.7377013, 0, 1, 0, 0.7377013, 0, 0.6751286, 48.939095, 25.105568, -159.95181)
+
+[node name="Ring4" parent="Track" unique_id=2032487712 instance=ExtResource("2_24d08")]
+transform = Transform3D(0.08342462, 0, -0.9965158, 0, 1, 0, 0.9965158, 0, 0.08342462, 105.26711, 36.33178, -186.61977)
+
+[node name="Ring5" parent="Track" unique_id=1924800054 instance=ExtResource("2_24d08")]
+transform = Transform3D(-0.27887976, 0, -0.96032995, 0, 1, 0, 0.96032995, 0, -0.27887976, 170.77156, 54.34266, -176.31013)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1715913683]
+environment = SubResource("Environment_6pmnr")

@@ -12,7 +12,7 @@ type Vector4f = SVector<f32, 4>;
 
 /// Imperial state vector, used for linear dynamics.
 /// All velocities are in a body-fixed reference frame.
-enum HelicopterStateVectorComponent {
+pub enum HelicopterStateVectorComponent {
     /// [ft/s] forward velocity
     U = 0,
     // [ft/s]  vertical velocity
@@ -32,7 +32,7 @@ enum HelicopterStateVectorComponent {
 }
 
 /// Helicopter control inputs.
-enum HelicopterInputsComponent {
+pub enum HelicopterInputsComponent {
     /// longitudinal cyclic
     UY = 0,
     /// collective
@@ -119,7 +119,7 @@ impl HelicopterLinearModel {
 
 #[derive(GodotClass)]
 #[class(base=RigidBody3D)]
-struct Helicopter {
+pub struct Helicopter {
     base: Base<RigidBody3D>,
 
     state_vector: Vector8f,
@@ -129,18 +129,21 @@ struct Helicopter {
 
     #[export_group(name = "Inputs")]
     #[export]
-    collective: f32,
+    pub collective: f32,
     #[export]
-    lateral_cyclic: f32,
+    pub lateral_cyclic: f32,
     #[export]
-    longitudinal_cyclic: f32,
+    pub longitudinal_cyclic: f32,
     #[export]
-    tail_rotor_cyclic: f32,
+    pub tail_rotor_cyclic: f32,
     #[export_group(name = "Meshes")]
     #[export]
     main_rotor_mesh: Option<Gd<MeshInstance3D>>,
     #[export]
     tail_rotor_mesh: Option<Gd<MeshInstance3D>>,
+    #[export_group(name = "Extra")]
+    #[export]
+    animate: bool,
 }
 
 #[godot_api]
@@ -157,6 +160,7 @@ impl IRigidBody3D for Helicopter {
             state_vector: Vector8f::zeros(),
             inputs_vector: Vector4f::zeros(),
             linear_model: HelicopterLinearModel::new(),
+            animate: true,
         }
     }
 
@@ -171,12 +175,22 @@ impl IRigidBody3D for Helicopter {
                 self.linear_model.a * self.state_vector + self.linear_model.b * self.inputs_vector;
 
             self.apply_accelerations(s.clone(), state_vector_derivative);
+
+            if self.animate {
+                let delta = s.get_step();
+                self.animate_main_rotor_rotation(delta);
+                self.animate_tail_rotor_rotation(delta);
+            }
         }
     }
 }
 
 #[godot_api]
 impl Helicopter {
+    pub fn get_state_vector(&self) -> &Vector8f {
+        return &self.state_vector;
+    }
+
     fn retrieve_state(&mut self, state: Gd<PhysicsDirectBodyState3D>) {
         let transform = state.get_transform();
         let global_to_local = transform.basis.inverse();
@@ -259,16 +273,22 @@ impl Helicopter {
     }
 
     #[func]
-    fn set_main_rotor_rotation(&mut self, angle: f32) {
+    fn animate_main_rotor_rotation(&mut self, delta: f32) {
+        const OMEGA: f32 = 10.0;
         if let Some(main_rotor_mesh) = &mut self.main_rotor_mesh {
-            main_rotor_mesh.set_rotation(Vector3::new(0.0, angle, 0.0));
+            let mut rotation = main_rotor_mesh.get_rotation();
+            rotation.y += OMEGA * delta;
+            main_rotor_mesh.set_rotation(rotation);
         }
     }
 
     #[func]
-    fn set_tail_rotor_rotation(&mut self, angle: f32) {
+    fn animate_tail_rotor_rotation(&mut self, delta: f32) {
+        const OMEGA: f32 = 30.0;
         if let Some(tail_rotor_mesh) = &mut self.tail_rotor_mesh {
-            tail_rotor_mesh.set_rotation(Vector3::new(angle, 0.0, 0.0));
+            let mut rotation = tail_rotor_mesh.get_rotation();
+            rotation.x += OMEGA * delta;
+            tail_rotor_mesh.set_rotation(rotation);
         }
     }
 }
