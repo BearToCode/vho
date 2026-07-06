@@ -40,9 +40,10 @@ pub struct Agent {
 
     // RL states
     episode_time: f32,
+    track_progress: f32,
+    rings_passed: usize,
     prev_x: Option<Tensor<Backend, 2>>,
     prev_u: Option<Tensor<Backend, 2>>,
-    prev_value: Option<Tensor<Backend, 2>>,
 
     // Godot params
     #[export]
@@ -81,8 +82,9 @@ impl INode3D for Agent {
 
             // RL states
             episode_time: 0.0,
+            track_progress: 0.0,
+            rings_passed: 0,
             prev_u: None,
-            prev_value: None,
             prev_x: None,
 
             // Godot params
@@ -100,24 +102,22 @@ impl INode3D for Agent {
         let helicopter: Gd<Helicopter> = game.bind().helicopter.clone().unwrap();
 
         {
-            let value = self.value();
-
-            if self.episode_time > self.max_episode_time || !self.constraints_are_valid(helicopter)
-            {
+            if self.episode_time > self.max_episode_time {
                 game.bind_mut().reset();
 
-                self.prev_u = None;
-                self.prev_value = None;
-                self.prev_x = None;
                 self.episode_time = 0.0;
+                self.track_progress = 0.0;
+                self.rings_passed = 0;
+                self.prev_u = None;
+                self.prev_x = None;
 
-                godot_print!("Episode completed. Final value {0}", value.into_scalar());
+                godot_print!("Episode completed. Final progress {0}", self.track_progress);
                 return;
             }
         }
 
         // Get current state
-        let (x, u, value) = {
+        let (x, u) = {
             let game_bind = game.bind();
             let track_bind = game_bind.track.as_ref().unwrap().bind();
 
@@ -127,25 +127,39 @@ impl INode3D for Agent {
 
             let x = self.get_state(helicopter.clone(), current_ring, next_ring);
             let u = self.actor_model.forward(x.clone());
-            let value = self.value();
 
             self.act(u.clone(), helicopter.clone());
 
-            (x, u, value)
+            (x, u)
         };
 
         if let Some(prev_x) = self.prev_x.as_ref()
             && let Some(prev_u) = self.prev_u.as_ref()
-            && let Some(prev_value) = self.prev_value.as_ref()
         {
             // Train all the networks
-            let reward = value.clone() - prev_value.clone();
+            let new_progress = game.bind().track_progress();
+            let new_rings_passed = game.bind().rings_passed();
+
+            let progress_reward = new_progress - self.track_progress;
+            let rings_reward = (new_rings_passed - self.rings_passed) as f32 * 100.0;
+
+            let crash_penalty = if self.crashing(helicopter) {
+                100.0 * delta // 100 points every second constraints are not valid
+            } else {
+                0.0
+            } as f32;
+
+            let reward = progress_reward + rings_reward - crash_penalty;
+            let reward = Tensor::<Backend, 1>::from_floats([reward], &self.device).reshape([1, 1]);
+
             self.train_step(prev_x.clone(), prev_u.clone(), reward, x.clone());
+
+            self.track_progress = new_progress;
+            self.rings_passed = new_rings_passed;
         }
 
         self.prev_x = Some(x);
         self.prev_u = Some(u);
-        self.prev_value = Some(value);
     }
 }
 
@@ -201,13 +215,6 @@ impl Agent {
             &self.device,
         )
         .reshape([1, STATE_DIM]);
-    }
-
-    /// Assign a value to the current game state.
-    fn value(&self) -> Tensor<Backend, 2> {
-        let game_bind = self.game.as_ref().expect("No game set for agent").bind();
-        let r = game_bind.distance_along_track() + game_bind.rings_passed() as f32 * 300.0;
-        return Tensor::<Backend, 1>::from_floats([r], &self.device).reshape([1, 1]);
     }
 
     /// Perform one training step.
@@ -268,7 +275,7 @@ impl Agent {
     }
 
     /// Check constraints.
-    fn constraints_are_valid(&self, helicopter: Gd<Helicopter>) -> bool {
+    fn crashing(&self, helicopter: Gd<Helicopter>) -> bool {
         let helicopter_bind = helicopter.bind();
         let helicopter_state = helicopter_bind.get_state_vector();
         type SV = HelicopterStateVectorComponent;
@@ -276,13 +283,13 @@ impl Agent {
         let roll_angle = helicopter_state[SV::Phi];
 
         if rad_to_deg(f32::abs(pitch_angle) as f64) > 40.0 {
-            return false;
+            return true;
         }
 
         if rad_to_deg(f32::abs(roll_angle) as f64) > 40.0 {
-            return false;
+            return true;
         }
 
-        return true;
+        return false;
     }
 }

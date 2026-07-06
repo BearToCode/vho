@@ -8,7 +8,7 @@ pub struct Game {
     base: Base<Node3D>,
 
     distance_to_ring: f32,
-    distance_along_track: f32,
+    track_progress: f32,
     rings_passed: usize,
     game_ended: bool,
 
@@ -25,7 +25,7 @@ impl INode3D for Game {
             base,
 
             distance_to_ring: 0.0,
-            distance_along_track: 0.0,
+            track_progress: 0.0,
             rings_passed: 0,
             game_ended: false,
 
@@ -70,7 +70,7 @@ impl INode3D for Game {
 
         let difference = self.distance_to_ring - new_distance_to_ring;
 
-        self.distance_along_track += difference;
+        self.track_progress += difference;
         self.distance_to_ring = new_distance_to_ring;
     }
 }
@@ -105,13 +105,13 @@ impl Game {
         helicopter.set_angular_velocity(Vector3::ZERO);
 
         self.distance_to_ring = self.compute_distance_to_next_ring();
-        self.distance_along_track = 0.0;
+        self.track_progress = 0.0;
         self.rings_passed = 0;
         self.game_ended = false;
     }
 
-    pub fn distance_along_track(&self) -> f32 {
-        self.distance_along_track
+    pub fn track_progress(&self) -> f32 {
+        self.track_progress
     }
 
     pub fn rings_passed(&self) -> usize {
