@@ -78,7 +78,7 @@ impl INode3D for Agent {
             actor_lr: 1e-4,
             critic_lr: 1e-3,
             gamma: 0.95,
-            max_episode_time: 10.0,
+            max_episode_time: 5.0,
 
             // RL states
             episode_time: 0.0,
@@ -105,13 +105,14 @@ impl INode3D for Agent {
             if self.episode_time > self.max_episode_time {
                 game.bind_mut().reset();
 
+                godot_print!("Episode completed. Final progress {0}", self.track_progress);
+
                 self.episode_time = 0.0;
                 self.track_progress = 0.0;
                 self.rings_passed = 0;
                 self.prev_u = None;
                 self.prev_x = None;
 
-                godot_print!("Episode completed. Final progress {0}", self.track_progress);
                 return;
             }
         }
@@ -141,10 +142,10 @@ impl INode3D for Agent {
             let new_rings_passed = game.bind().rings_passed();
 
             let progress_reward = new_progress - self.track_progress;
-            let rings_reward = (new_rings_passed - self.rings_passed) as f32 * 100.0;
+            let rings_reward = (new_rings_passed - self.rings_passed) as f32 * 10.0;
 
             let crash_penalty = if self.crashing(helicopter) {
-                100.0 * delta // 100 points every second constraints are not valid
+                10.0 * delta // 100 points every second constraints are not valid
             } else {
                 0.0
             } as f32;
