@@ -59,6 +59,11 @@ pub struct Agent {
     tail_rotor_cyclic_range: f32,
 }
 
+pub enum TrainingStep {
+    Terminal,
+    Normal(Tensor<Backend, 2>),
+}
+
 #[godot_api]
 impl INode3D for Agent {
     fn init(base: Base<Node3D>) -> Self {
@@ -104,14 +109,7 @@ impl INode3D for Agent {
         {
             if self.episode_time > self.max_episode_time {
                 game.bind_mut().reset();
-
-                godot_print!("Episode completed. Final progress {0}", self.track_progress);
-
-                self.episode_time = 0.0;
-                self.track_progress = 0.0;
-                self.rings_passed = 0;
-                self.prev_u = None;
-                self.prev_x = None;
+                self.reset_episode();
 
                 return;
             }
@@ -134,6 +132,26 @@ impl INode3D for Agent {
             (x, u)
         };
 
+        // Check if the helicopter is crashing
+        if self.crashing(helicopter.clone()) {
+            let crash_penalty = 100.0;
+            let reward =
+                Tensor::<Backend, 1>::from_floats([-crash_penalty], &self.device).reshape([1, 1]);
+
+            if let (Some(prev_x), Some(prev_u)) = (&self.prev_x, &self.prev_u) {
+                self.train_step(
+                    prev_x.clone(),
+                    prev_u.clone(),
+                    reward,
+                    TrainingStep::Terminal,
+                );
+            }
+
+            game.bind_mut().reset();
+            self.reset_episode();
+            return;
+        }
+
         if let Some(prev_x) = self.prev_x.as_ref()
             && let Some(prev_u) = self.prev_u.as_ref()
         {
@@ -141,19 +159,20 @@ impl INode3D for Agent {
             let new_progress = game.bind().track_progress();
             let new_rings_passed = game.bind().rings_passed();
 
-            let progress_reward = new_progress - self.track_progress;
+            let progress_reward = (new_progress - self.track_progress) * 5.0;
             let rings_reward = (new_rings_passed - self.rings_passed) as f32 * 10.0;
 
-            let crash_penalty = if self.crashing(helicopter) {
-                10.0 * delta // 100 points every second constraints are not valid
-            } else {
-                0.0
-            } as f32;
+            let living_penalty = 0.05 * delta;
 
-            let reward = progress_reward + rings_reward - crash_penalty;
+            let reward = progress_reward + rings_reward - living_penalty;
             let reward = Tensor::<Backend, 1>::from_floats([reward], &self.device).reshape([1, 1]);
 
-            self.train_step(prev_x.clone(), prev_u.clone(), reward, x.clone());
+            self.train_step(
+                prev_x.clone(),
+                prev_u.clone(),
+                reward,
+                TrainingStep::Normal(x.clone()),
+            );
 
             self.track_progress = new_progress;
             self.rings_passed = new_rings_passed;
@@ -224,12 +243,17 @@ impl Agent {
         x: Tensor<Backend, 2>,
         u: Tensor<Backend, 2>,
         reward: Tensor<Backend, 2>,
-        x_next: Tensor<Backend, 2>,
+        step: TrainingStep,
     ) {
         // 1. critic update
-        let u_next = self.actor_model.forward(x_next.clone()).detach();
-        let j_next = self.critic_model.forward(x_next, u_next).detach();
-        let target = reward + j_next.mul_scalar(self.gamma);
+        let target = match step {
+            TrainingStep::Normal(x_next) => {
+                let u_next = self.actor_model.forward(x_next.clone()).detach();
+                let j_next = self.critic_model.forward(x_next, u_next).detach();
+                reward + j_next.mul_scalar(self.gamma)
+            }
+            TrainingStep::Terminal => reward,
+        };
 
         let j_pred = self.critic_model.forward(x.clone(), u.clone());
         let critic_loss = (target - j_pred).powf_scalar(2.0).mean();
@@ -292,5 +316,15 @@ impl Agent {
         }
 
         return false;
+    }
+
+    fn reset_episode(&mut self) {
+        godot_print!("Episode completed. Final progress {0}", self.track_progress);
+
+        self.episode_time = 0.0;
+        self.track_progress = 0.0;
+        self.rings_passed = 0;
+        self.prev_u = None;
+        self.prev_x = None;
     }
 }

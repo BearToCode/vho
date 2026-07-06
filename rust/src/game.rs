@@ -61,7 +61,7 @@ impl INode3D for Game {
         self.distance_to_ring = self.compute_distance_to_next_ring();
     }
 
-    fn physics_process(&mut self, delta: f32) {
+    fn physics_process(&mut self, _delta: f32) {
         if self.game_ended {
             return;
         }
