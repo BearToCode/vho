@@ -98,11 +98,14 @@ impl Game {
             .helicopter
             .as_mut()
             .expect("Game is missing the helicopter");
+        let track = self.track.as_mut().expect("Game is missing the track");
 
         helicopter.set_position(Vector3::ZERO);
         helicopter.set_linear_velocity(Vector3::ZERO);
         helicopter.set_rotation(Vector3::ZERO);
         helicopter.set_angular_velocity(Vector3::ZERO);
+
+        track.bind_mut().current_ring_index = 0;
 
         self.distance_to_ring = self.compute_distance_to_next_ring();
         self.track_progress = 0.0;

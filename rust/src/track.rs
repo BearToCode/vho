@@ -6,7 +6,7 @@ use crate::ring::Ring;
 #[class(base=Node3D)]
 pub struct Track {
     base: Base<Node3D>,
-    current_ring_index: usize,
+    pub current_ring_index: usize,
 
     #[export]
     pub rings: Array<Option<Gd<Ring>>>,

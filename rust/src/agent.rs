@@ -30,6 +30,8 @@ const ACTION_DIM: usize = 4;
 pub struct EpisodeState {
     /// Elapsed time.
     pub time: f32,
+    /// Number of frames elapsed.
+    pub frame_count: usize,
     /// Progression along the track.
     pub track_progress: f32,
     /// Number of rings passed.
@@ -48,6 +50,7 @@ impl EpisodeState {
     pub fn new() -> Self {
         EpisodeState {
             time: 0.0,
+            frame_count: 0,
             track_progress: 0.0,
             rings_passed: 0,
             reward: 0.0,
@@ -103,26 +106,47 @@ pub struct Agent {
     #[export]
     game: Option<Gd<Game>>,
 
+    #[export_group(name = "Model Loading")]
+    #[export]
+    /// Model to load
+    load_model_dir: GString,
+    #[export]
+    /// Iteration of the model to load
+    load_model_iteration: i64,
+
     #[export_group(name = "Reinforcement Learning")]
     #[export]
-    /// Actor model learning rate.
-    actor_lr: f64,
-    #[export]
-    /// Critic model learning rate.
-    critic_lr: f64,
+    train_every_n_frames: i64,
     #[export]
     /// Gamma parameter of the Bellman function.
     gamma: f32,
     #[export]
-    /// Tau parameter for Polyak updates.
-    tau: f32,
-    #[export]
     /// Maximum duration of each episode in seconds.
     max_episode_time: f32,
+
+    #[export_group(name = "Exploration Noise")]
+    #[export]
+    use_exploration_noise: bool,
     #[export]
     /// Training time after which noise scale reaches 0 (fully exploiting).
     noise_decay_time: f32,
-    #[export_subgroup(name = "Replay Batch")]
+
+    #[export_subgroup(name = "Target networks")]
+    #[export]
+    use_target: bool,
+    #[export]
+    /// Tau parameter for Polyak updates.
+    tau: f32,
+
+    #[export_subgroup(name = "Learning Rates")]
+    #[export]
+    /// Actor model learning rate.
+    actor_learning_rate: f64,
+    #[export]
+    /// Critic model learning rate.
+    critic_learning_rate: f64,
+
+    #[export_subgroup(name = "Replay Buffer")]
     #[export]
     /// Number of transitions to sample per training step.
     batch_size: i64,
@@ -143,14 +167,6 @@ pub struct Agent {
     #[export]
     /// Range of allowed tail rotor cyclic action values (-range, +range)
     tail_rotor_cyclic_range: f32,
-}
-
-/// Type of critic update to perform.
-pub enum CriticUpdate {
-    /// This is a terminal update. The target value is equal to the reward.
-    Terminal,
-    /// Normal update. The target value is reward + j_next * gamma
-    Normal(Tensor<Backend, 2>),
 }
 
 #[godot_api]
@@ -187,22 +203,32 @@ impl INode3D for Agent {
             critic_optimizer: AdamConfig::new().build().into(),
 
             // RL params
-            actor_lr: 1e-4,
-            critic_lr: 1e-3,
+            actor_learning_rate: 1e-4,
+            critic_learning_rate: 1e-3,
+            train_every_n_frames: 1,
             gamma: 0.95,
-            tau: 0.005,
-            max_episode_time: 5.0,
-            total_training_time: 0.0,
+            max_episode_time: 10.0,
+
+            use_exploration_noise: true,
             noise_decay_time: 20_000.0,
 
+            use_target: true,
+            tau: 0.005,
+
             // RL states
+            total_training_time: 0.0,
             episode_count: 0,
             episode: EpisodeState::new(),
             action_noise: OuNoise::new(ACTION_DIM, 0.15, 0.2, 0xC0FFEE),
             prev_u: None,
             prev_x: None,
+
+            batch_size: 32,
+            min_buffer_size: 1_000,
             replay_buffer: ReplayBuffer::new(100_000, 0xDEADBEEF),
 
+            load_model_dir: GString::new(),
+            load_model_iteration: 0,
             log_dir,
 
             // Godot params
@@ -211,28 +237,37 @@ impl INode3D for Agent {
             lateral_cyclic_range: 1.0,
             longitudinal_cyclic_range: 1.0,
             tail_rotor_cyclic_range: 0.3,
-            batch_size: 128,
-            min_buffer_size: 1_000,
+        }
+    }
+
+    fn ready(&mut self) {
+        if !self.load_model_dir.is_empty() {
+            self.load_checkpoint(self.load_model_dir.to_string(), self.load_model_iteration);
         }
     }
 
     fn physics_process(&mut self, delta: f32) {
         self.episode.time += delta;
         self.total_training_time += delta;
+        self.episode.frame_count += 1;
 
-        // Decay exploration noise linearly to 0 over noise_decay_time.
-        let scale = 1.0 - (self.total_training_time / self.noise_decay_time).min(1.0);
-        self.action_noise.set_scale(scale);
-
+        // Retrieve references to the game and helicopter for this step.
         let mut game: Gd<Game> = self.game.clone().unwrap();
         let helicopter: Gd<Helicopter> = game.bind().helicopter.clone().unwrap();
 
+        // Reset the episode if the maximum time has been exceeded.
         if self.episode.time > self.max_episode_time {
             self.log_episode(false);
             game.bind_mut().reset();
             self.reset_episode();
 
             return;
+        }
+
+        // Decay exploration noise linearly to 0 over noise_decay_time.
+        if self.use_exploration_noise {
+            let scale = 1.0 - (self.total_training_time / self.noise_decay_time).min(1.0);
+            self.action_noise.set_scale(scale);
         }
 
         // Let the agent act based on the current state
@@ -245,16 +280,19 @@ impl INode3D for Agent {
             let helicopter = game_bind.helicopter.as_ref().unwrap();
 
             let x = self.get_state(helicopter.clone(), current_ring, next_ring);
-            let u = self.actor.forward(x.clone());
+            let mut u = self.actor.forward(x.clone());
 
-            let noisy_u = self.add_exploration_noise(u.clone());
-            self.act(noisy_u, helicopter.clone());
+            if self.use_exploration_noise {
+                u = self.add_exploration_noise(u);
+            }
+
+            self.act(u.clone(), helicopter.clone());
 
             (x, u)
         };
 
         // Check if the helicopter is crashing
-        if self.crashing(helicopter.clone()) {
+        if self.is_crashing(helicopter.clone()) {
             let crash_penalty = 30.0;
             let reward_value = -crash_penalty;
 
@@ -269,6 +307,7 @@ impl INode3D for Agent {
             }
 
             let (critic_loss, actor_loss) = self.train_from_buffer();
+
             self.episode.critic_loss_sum += critic_loss;
             self.episode.actor_loss_sum += actor_loss;
             self.episode.train_steps += 1;
@@ -286,10 +325,10 @@ impl INode3D for Agent {
             let new_progress = game.bind().track_progress();
             let new_rings_passed = game.bind().rings_passed();
 
-            let progress_reward = (new_progress - self.episode.track_progress) * 10.0;
+            let progress_reward = (new_progress - self.episode.track_progress) * 0.1;
             let rings_reward = (new_rings_passed - self.episode.rings_passed) as f32 * 10.0;
-            let living_penalty = 0.05 * delta;
-            let reward_value = progress_reward + rings_reward - living_penalty;
+            let living_reward = 1.0 * delta;
+            let reward_value = progress_reward + rings_reward + living_reward;
 
             self.replay_buffer.push(
                 Self::tensor_to_vec(prev_x),
@@ -298,12 +337,14 @@ impl INode3D for Agent {
                 Some(Self::tensor_to_vec(&x)),
             );
 
-            let (critic_loss, actor_loss) = self.train_from_buffer();
+            if self.episode.frame_count % (self.train_every_n_frames as usize) == 0 {
+                let (critic_loss, actor_loss) = self.train_from_buffer();
+                self.episode.critic_loss_sum += critic_loss;
+                self.episode.actor_loss_sum += actor_loss;
+                self.episode.train_steps += 1;
+            }
 
             self.episode.reward += reward_value;
-            self.episode.critic_loss_sum += critic_loss;
-            self.episode.actor_loss_sum += actor_loss;
-            self.episode.train_steps += 1;
             self.episode.track_progress = new_progress;
             self.episode.rings_passed = new_rings_passed;
         }
@@ -313,6 +354,7 @@ impl INode3D for Agent {
     }
 }
 
+#[godot_api]
 impl Agent {
     /// Get the state tensor from the simulation.
     fn get_state(
@@ -417,8 +459,14 @@ impl Agent {
                 .reshape([bs, 1]);
 
         // 1. critic update
-        let u_next = self.actor_target.forward(next_states.clone()).detach();
-        let j_next = self.critic_target.forward(next_states, u_next).detach();
+        let j_next = if self.use_target {
+            let u_next = self.actor_target.forward(next_states.clone()).detach();
+            self.critic_target.forward(next_states, u_next).detach()
+        } else {
+            let u_next = self.actor.forward(next_states.clone()).detach();
+            self.critic.forward(next_states, u_next).detach()
+        };
+
         let target = rewards + j_next.mul_scalar(self.gamma) * non_terminal_mask;
 
         let j_pred = self.critic.forward(states.clone(), actions.clone());
@@ -431,9 +479,9 @@ impl Agent {
 
         let grads = critic_loss.backward();
         let grads = GradientsParams::from_grads(grads, &self.critic);
-        self.critic = self
-            .critic_optimizer
-            .step(self.critic_lr, self.critic.clone(), grads);
+        self.critic =
+            self.critic_optimizer
+                .step(self.critic_learning_rate, self.critic.clone(), grads);
 
         // 2. actor update (maximize J)
         let u_pred = self.actor.forward(states.clone());
@@ -449,11 +497,13 @@ impl Agent {
         let grads = GradientsParams::from_grads(grads, &self.actor);
         self.actor = self
             .actor_optimizer
-            .step(self.actor_lr, self.actor.clone(), grads);
+            .step(self.actor_learning_rate, self.actor.clone(), grads);
 
         // 3. Polyak averaging
-        self.actor_target.polyak_update(&self.actor, self.tau);
-        self.critic_target.polyak_update(&self.critic, self.tau);
+        if self.use_target {
+            self.actor_target.polyak_update(&self.actor, self.tau);
+            self.critic_target.polyak_update(&self.critic, self.tau);
+        }
 
         (critic_loss_value, actor_loss_value)
     }
@@ -482,7 +532,7 @@ impl Agent {
     }
 
     /// Check if the helicopter is flying in a invalid state.
-    fn crashing(&self, helicopter: Gd<Helicopter>) -> bool {
+    fn is_crashing(&self, helicopter: Gd<Helicopter>) -> bool {
         let helicopter_bind = helicopter.bind();
         let helicopter_state = helicopter_bind.get_state_vector();
         type SV = HelicopterStateVectorComponent;
@@ -580,7 +630,17 @@ impl Agent {
             godot_error!("Failed to write CSV row: {e}");
         }
 
-        godot_print!("Episode completed: {}", row);
+        godot_print!(
+            "T: {:.2} \t| Pgr: {:.2} \t| Rings: {} \t| Rwd: {:.2} \t| Avg Crit Ls: {:.2} \t| Avg Actor Ls: {:.2} \t| Ns: {:.4} \t| Cr: {}",
+            self.episode.time,
+            self.episode.track_progress,
+            self.episode.rings_passed,
+            self.episode.reward,
+            avg_critic_loss,
+            avg_actor_loss,
+            self.action_noise.scale(),
+            crashed
+        );
     }
 
     /// Save the current actor and critic model weights to disk.
@@ -602,6 +662,36 @@ impl Agent {
         }
 
         godot_print!("Saved checkpoint");
+    }
+
+    /// Load actor and critic weights from disk, replacing the current models
+    /// (and re-syncing target networks to match).
+    pub fn load_checkpoint(&mut self, dir: String, iteration: i64) {
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+
+        match self.actor.clone().load_file(
+            format!("{dir}/actor_{iteration}"),
+            &recorder,
+            &self.device,
+        ) {
+            Ok(actor) => self.actor = actor,
+            Err(e) => godot_print!("Failed to load actor: {e}"),
+        }
+
+        match self.critic.clone().load_file(
+            format!("{dir}/critic_{iteration}"),
+            &recorder,
+            &self.device,
+        ) {
+            Ok(critic) => self.critic = critic,
+            Err(e) => godot_print!("Failed to load critic: {e}"),
+        }
+
+        // Keep target networks in sync with the freshly loaded weights.
+        self.actor_target = self.actor.clone();
+        self.critic_target = self.critic.clone();
+
+        godot_print!("Loaded checkpoint from {dir}");
     }
 
     /// Convert a [1, dim] tensor to a flat Vec<f32>.
