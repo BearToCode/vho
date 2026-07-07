@@ -275,12 +275,12 @@ impl INode3D for Agent {
             let new_progress = game.bind().track_progress();
             let new_rings_passed = game.bind().rings_passed();
 
-            let progress_reward = (new_progress - self.episode.track_progress) * 5.0;
+            let progress_reward = (new_progress - self.episode.track_progress) * 10.0;
             let rings_reward = (new_rings_passed - self.episode.rings_passed) as f32 * 10.0;
 
-            let living_penalty = 0.05 * delta;
+            let living_reward = 0.5 * delta;
 
-            let reward_value = progress_reward + rings_reward - living_penalty;
+            let reward_value = progress_reward + rings_reward + living_reward;
             let reward =
                 Tensor::<Backend, 1>::from_floats([reward_value], &self.device).reshape([1, 1]);
 
@@ -315,11 +315,14 @@ impl Agent {
     ) -> Tensor<Backend, 2> {
         // First 8 components: Helicopter dynamics state vector
         let mut helicopter_state = helicopter.bind().get_state_vector().clone();
-        // Scale angular velocities for better gradients
         type SV = HelicopterStateVectorComponent;
-        helicopter_state[SV::Q] *= 10.0;
-        helicopter_state[SV::P] *= 10.0;
-        helicopter_state[SV::R] *= 10.0;
+        // Scale velocities  for better gradients
+        helicopter_state[SV::U as usize] /= 50.0;
+        helicopter_state[SV::W as usize] /= 50.0;
+        helicopter_state[SV::V as usize] /= 50.0;
+        helicopter_state[SV::Q] *= 2.0;
+        helicopter_state[SV::P] *= 2.0;
+        helicopter_state[SV::R] *= 2.0;
 
         // Helicopter necessary transform data
         let helicopter_position = helicopter.get_global_position();
@@ -327,17 +330,21 @@ impl Agent {
 
         // Second 3 components: Helicopter position relative to fist ring, in local reference frame
         let current_ring_position = current_ring.get_global_position();
-        let current_ring_relative_position =
+        let mut current_ring_relative_position =
             global_to_local * (current_ring_position - helicopter_position);
 
         // Third 3 components: Helicopter position relative to second ring, in local reference frame
-        let next_ring_relative_position = if let Some(next_ring) = next_ring {
+        let mut next_ring_relative_position = if let Some(next_ring) = next_ring {
             let next_ring_position = next_ring.get_global_position();
             global_to_local * (next_ring_position - helicopter_position)
         } else {
             // Use same location as current ring if it's the last one
             current_ring_relative_position
         };
+
+        // Rescale rings relative positions
+        current_ring_relative_position /= 100.0;
+        next_ring_relative_position /= 100.0;
 
         return Tensor::<Backend, 1>::from_data(
             [
