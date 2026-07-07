@@ -5,6 +5,7 @@ mod game;
 mod helicopter;
 mod networks;
 mod noise;
+mod replay_buffer;
 mod ring;
 mod track;
 

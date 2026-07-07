@@ -15,6 +15,7 @@ use crate::{
     helicopter::{Helicopter, HelicopterStateVectorComponent},
     networks::{ActorModel, CriticModel},
     noise::OuNoise,
+    replay_buffer::ReplayBuffer,
     ring::Ring,
 };
 
@@ -92,6 +93,8 @@ pub struct Agent {
     prev_u: Option<Tensor<Backend, 2>>,
     /// Exploration noise process, one component per action dimension.
     action_noise: OuNoise,
+    /// Replay buffer of past transitions for decorrelated minibatch training.
+    replay_buffer: ReplayBuffer,
 
     /// Path to the output directory.
     log_dir: String,
@@ -119,6 +122,13 @@ pub struct Agent {
     #[export]
     /// Training time after which noise scale reaches 0 (fully exploiting).
     noise_decay_time: f32,
+    #[export_subgroup(name = "Replay Batch")]
+    #[export]
+    /// Number of transitions to sample per training step.
+    batch_size: i64,
+    #[export]
+    /// Minimum buffer size before training starts.
+    min_buffer_size: i64,
 
     #[export_group(name = "Input Ranges")]
     #[export]
@@ -191,6 +201,7 @@ impl INode3D for Agent {
             action_noise: OuNoise::new(ACTION_DIM, 0.15, 0.2, 0xC0FFEE),
             prev_u: None,
             prev_x: None,
+            replay_buffer: ReplayBuffer::new(100_000, 0xDEADBEEF),
 
             log_dir,
 
@@ -200,6 +211,8 @@ impl INode3D for Agent {
             lateral_cyclic_range: 1.0,
             longitudinal_cyclic_range: 1.0,
             tail_rotor_cyclic_range: 0.3,
+            batch_size: 128,
+            min_buffer_size: 1_000,
         }
     }
 
@@ -244,22 +257,21 @@ impl INode3D for Agent {
         if self.crashing(helicopter.clone()) {
             let crash_penalty = 30.0;
             let reward_value = -crash_penalty;
-            let reward =
-                Tensor::<Backend, 1>::from_floats([reward_value], &self.device).reshape([1, 1]);
 
             if let (Some(prev_x), Some(prev_u)) = (&self.prev_x, &self.prev_u) {
-                let (critic_loss, actor_loss) = self.train_step(
-                    prev_x.clone(),
-                    prev_u.clone(),
-                    reward,
-                    CriticUpdate::Terminal,
+                self.replay_buffer.push(
+                    Self::tensor_to_vec(prev_x),
+                    Self::tensor_to_vec(prev_u),
+                    reward_value,
+                    None, // terminal
                 );
-
                 self.episode.reward += reward_value;
-                self.episode.critic_loss_sum += critic_loss;
-                self.episode.actor_loss_sum += actor_loss;
-                self.episode.train_steps += 1;
             }
+
+            let (critic_loss, actor_loss) = self.train_from_buffer();
+            self.episode.critic_loss_sum += critic_loss;
+            self.episode.actor_loss_sum += actor_loss;
+            self.episode.train_steps += 1;
 
             self.log_episode(true);
             game.bind_mut().reset();
@@ -271,26 +283,22 @@ impl INode3D for Agent {
         if let Some(prev_x) = self.prev_x.as_ref()
             && let Some(prev_u) = self.prev_u.as_ref()
         {
-            // Compute reward
             let new_progress = game.bind().track_progress();
             let new_rings_passed = game.bind().rings_passed();
 
             let progress_reward = (new_progress - self.episode.track_progress) * 10.0;
             let rings_reward = (new_rings_passed - self.episode.rings_passed) as f32 * 10.0;
+            let living_penalty = 0.05 * delta;
+            let reward_value = progress_reward + rings_reward - living_penalty;
 
-            let living_reward = 0.5 * delta;
-
-            let reward_value = progress_reward + rings_reward + living_reward;
-            let reward =
-                Tensor::<Backend, 1>::from_floats([reward_value], &self.device).reshape([1, 1]);
-
-            // Perform normal train step
-            let (critic_loss, actor_loss) = self.train_step(
-                prev_x.clone(),
-                prev_u.clone(),
-                reward,
-                CriticUpdate::Normal(x.clone()),
+            self.replay_buffer.push(
+                Self::tensor_to_vec(prev_x),
+                Self::tensor_to_vec(prev_u),
+                reward_value,
+                Some(Self::tensor_to_vec(&x)),
             );
+
+            let (critic_loss, actor_loss) = self.train_from_buffer();
 
             self.episode.reward += reward_value;
             self.episode.critic_loss_sum += critic_loss;
@@ -367,26 +375,53 @@ impl Agent {
         .reshape([1, STATE_DIM]);
     }
 
-    /// Perform one training step.
-    /// Returns the critic and actor loss values.
-    pub fn train_step(
-        &mut self,
-        x: Tensor<Backend, 2>,
-        u: Tensor<Backend, 2>,
-        reward: Tensor<Backend, 2>,
-        critic_update: CriticUpdate,
-    ) -> (f32, f32) {
-        // 1. critic update
-        let target = match critic_update {
-            CriticUpdate::Normal(x_next) => {
-                let u_next = self.actor_target.forward(x_next.clone()).detach();
-                let j_next = self.critic_target.forward(x_next, u_next).detach();
-                reward + j_next.mul_scalar(self.gamma)
-            }
-            CriticUpdate::Terminal => reward,
+    /// Sample a minibatch from the replay buffer and perform one training
+    /// step on it. Returns (0.0, 0.0) if there isn't enough data yet to
+    /// sample a full batch (no-op, but still counted in episode stats as a
+    /// zero-loss step — acceptable early on since it only affects a few
+    /// episodes' worth of logging before the buffer fills).
+    fn train_from_buffer(&mut self) -> (f32, f32) {
+        if self.replay_buffer.len() < self.min_buffer_size as usize {
+            return (0.0, 0.0);
+        }
+
+        let batch = match self
+            .replay_buffer
+            .sample(self.batch_size as usize, STATE_DIM, ACTION_DIM)
+        {
+            Some(b) => b,
+            None => return (0.0, 0.0),
         };
 
-        let j_pred = self.critic.forward(x.clone(), u.clone());
+        let bs = batch.batch_size;
+
+        let states = Tensor::<Backend, 1>::from_floats(batch.states.as_slice(), &self.device)
+            .reshape([bs, STATE_DIM]);
+        let actions = Tensor::<Backend, 1>::from_floats(batch.actions.as_slice(), &self.device)
+            .reshape([bs, ACTION_DIM]);
+        let rewards = Tensor::<Backend, 1>::from_floats(batch.rewards.as_slice(), &self.device)
+            .reshape([bs, 1]);
+        let next_states =
+            Tensor::<Backend, 1>::from_floats(batch.next_states.as_slice(), &self.device)
+                .reshape([bs, STATE_DIM]);
+
+        // Mask out target contributions for terminal transitions: for those,
+        // the target should be just `reward`, not `reward + gamma * j_next`.
+        let non_terminal_mask: Vec<f32> = batch
+            .is_terminal
+            .iter()
+            .map(|&t| if t { 0.0 } else { 1.0 })
+            .collect();
+        let non_terminal_mask =
+            Tensor::<Backend, 1>::from_floats(non_terminal_mask.as_slice(), &self.device)
+                .reshape([bs, 1]);
+
+        // 1. critic update
+        let u_next = self.actor_target.forward(next_states.clone()).detach();
+        let j_next = self.critic_target.forward(next_states, u_next).detach();
+        let target = rewards + j_next.mul_scalar(self.gamma) * non_terminal_mask;
+
+        let j_pred = self.critic.forward(states.clone(), actions.clone());
         let critic_loss = (target - j_pred).powf_scalar(2.0).mean();
         let critic_loss_value = critic_loss
             .clone()
@@ -401,8 +436,8 @@ impl Agent {
             .step(self.critic_lr, self.critic.clone(), grads);
 
         // 2. actor update (maximize J)
-        let u_pred = self.actor.forward(x.clone());
-        let j_for_actor = self.critic.forward(x, u_pred).mean();
+        let u_pred = self.actor.forward(states.clone());
+        let j_for_actor = self.critic.forward(states, u_pred).mean();
         let actor_loss = j_for_actor.neg();
         let actor_loss_value = actor_loss
             .clone()
@@ -567,5 +602,13 @@ impl Agent {
         }
 
         godot_print!("Saved checkpoint");
+    }
+
+    /// Convert a [1, dim] tensor to a flat Vec<f32>.
+    fn tensor_to_vec(t: &Tensor<Backend, 2>) -> Vec<f32> {
+        t.clone()
+            .into_data()
+            .to_vec::<f32>()
+            .expect("Failed to read tensor data")
     }
 }
