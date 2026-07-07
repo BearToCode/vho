@@ -4,7 +4,9 @@ use burn::{
         Autodiff,
         flex::{Flex, FlexDevice},
     },
+    module::Module,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
+    record::{FullPrecisionSettings, NamedMpkFileRecorder},
 };
 use godot::{global::rad_to_deg, prelude::*};
 
@@ -12,6 +14,7 @@ use crate::{
     game::Game,
     helicopter::{Helicopter, HelicopterStateVectorComponent},
     networks::{ActorModel, CriticModel},
+    noise::OuNoise,
     ring::Ring,
 };
 
@@ -22,6 +25,37 @@ type Backend = Autodiff<Flex>;
 const STATE_DIM: usize = 14;
 /// Dimension of the action output of the model.
 const ACTION_DIM: usize = 4;
+
+pub struct EpisodeState {
+    /// Elapsed time.
+    pub time: f32,
+    /// Progression along the track.
+    pub track_progress: f32,
+    /// Number of rings passed.
+    pub rings_passed: usize,
+    /// Accumulated reward this episode.
+    pub reward: f32,
+    /// Sum of critic losses this episode (for averaging).
+    pub critic_loss_sum: f32,
+    /// Sum of actor losses this episode (for averaging).
+    pub actor_loss_sum: f32,
+    /// Number of train_step calls this episode (for averaging).
+    pub train_steps: usize,
+}
+
+impl EpisodeState {
+    pub fn new() -> Self {
+        EpisodeState {
+            time: 0.0,
+            track_progress: 0.0,
+            rings_passed: 0,
+            reward: 0.0,
+            critic_loss_sum: 0.0,
+            actor_loss_sum: 0.0,
+            train_steps: 0,
+        }
+    }
+}
 
 #[derive(GodotClass)]
 #[class(base=Node3D)]
@@ -45,33 +79,47 @@ pub struct Agent {
     /// Adam optimizer for the critic model.
     critic_optimizer: OptimizerAdaptor<Adam, CriticModel<Backend>, Backend>,
 
-    // RL params
-    /// Actor model learning rate.
-    actor_lr: f64,
-    /// Critic model learning rate.
-    critic_lr: f64,
-    /// Gamma parameter of the Bellman function.
-    gamma: f32,
-    /// Tau parameter for Polyak updates.
-    tau: f32,
-    /// Maximum duration of each episode in seconds.
-    max_episode_time: f32,
-
     // RL states
-    /// Current episode time.
-    episode_time: f32,
-    /// Current progression along the track.
-    track_progress: f32,
-    /// Current number of rings passed.
-    rings_passed: usize,
+    /// Total elapsed training time, used to decay exploration noise.
+    total_training_time: f32,
+    /// Number of episodes.
+    episode_count: usize,
+    /// Episode statistics.
+    episode: EpisodeState,
     /// Previous state tensor.
     prev_x: Option<Tensor<Backend, 2>>,
     /// Previous action tensor.
     prev_u: Option<Tensor<Backend, 2>>,
+    /// Exploration noise process, one component per action dimension.
+    action_noise: OuNoise,
+
+    /// Path to the output directory.
+    log_dir: String,
 
     // Godot params
     #[export]
     game: Option<Gd<Game>>,
+
+    #[export_group(name = "Reinforcement Learning")]
+    #[export]
+    /// Actor model learning rate.
+    actor_lr: f64,
+    #[export]
+    /// Critic model learning rate.
+    critic_lr: f64,
+    #[export]
+    /// Gamma parameter of the Bellman function.
+    gamma: f32,
+    #[export]
+    /// Tau parameter for Polyak updates.
+    tau: f32,
+    #[export]
+    /// Maximum duration of each episode in seconds.
+    max_episode_time: f32,
+    #[export]
+    /// Training time after which noise scale reaches 0 (fully exploiting).
+    noise_decay_time: f32,
+
     #[export_group(name = "Input Ranges")]
     #[export]
     /// Range of allowed collective action values (-range, +range)
@@ -98,6 +146,9 @@ pub enum CriticUpdate {
 #[godot_api]
 impl INode3D for Agent {
     fn init(base: Base<Node3D>) -> Self {
+        use chrono::Local;
+        use std::fs;
+
         let device = FlexDevice;
 
         let actor = ActorModel::new(STATE_DIM, ACTION_DIM, &device);
@@ -105,6 +156,13 @@ impl INode3D for Agent {
 
         let actor_target = actor.clone();
         let critic_target = critic.clone();
+
+        let log_dir = Local::now()
+            .format("../output/run_%Y_%m_%d__%H_%M_%S/")
+            .to_string();
+        if let Err(e) = fs::create_dir_all(&log_dir) {
+            godot_error!("Failed to create run directory {log_dir}: {e}");
+        }
 
         Self {
             base,
@@ -124,13 +182,17 @@ impl INode3D for Agent {
             gamma: 0.95,
             tau: 0.005,
             max_episode_time: 5.0,
+            total_training_time: 0.0,
+            noise_decay_time: 20_000.0,
 
             // RL states
-            episode_time: 0.0,
-            track_progress: 0.0,
-            rings_passed: 0,
+            episode_count: 0,
+            episode: EpisodeState::new(),
+            action_noise: OuNoise::new(ACTION_DIM, 0.15, 0.2, 0xC0FFEE),
             prev_u: None,
             prev_x: None,
+
+            log_dir,
 
             // Godot params
             game: None,
@@ -142,11 +204,18 @@ impl INode3D for Agent {
     }
 
     fn physics_process(&mut self, delta: f32) {
-        self.episode_time += delta;
+        self.episode.time += delta;
+        self.total_training_time += delta;
+
+        // Decay exploration noise linearly to 0 over noise_decay_time.
+        let scale = 1.0 - (self.total_training_time / self.noise_decay_time).min(1.0);
+        self.action_noise.set_scale(scale);
+
         let mut game: Gd<Game> = self.game.clone().unwrap();
         let helicopter: Gd<Helicopter> = game.bind().helicopter.clone().unwrap();
 
-        if self.episode_time > self.max_episode_time {
+        if self.episode.time > self.max_episode_time {
+            self.log_episode(false);
             game.bind_mut().reset();
             self.reset_episode();
 
@@ -165,26 +234,34 @@ impl INode3D for Agent {
             let x = self.get_state(helicopter.clone(), current_ring, next_ring);
             let u = self.actor.forward(x.clone());
 
-            self.act(u.clone(), helicopter.clone());
+            let noisy_u = self.add_exploration_noise(u.clone());
+            self.act(noisy_u, helicopter.clone());
 
             (x, u)
         };
 
         // Check if the helicopter is crashing
         if self.crashing(helicopter.clone()) {
-            let crash_penalty = 100.0;
+            let crash_penalty = 30.0;
+            let reward_value = -crash_penalty;
             let reward =
-                Tensor::<Backend, 1>::from_floats([-crash_penalty], &self.device).reshape([1, 1]);
+                Tensor::<Backend, 1>::from_floats([reward_value], &self.device).reshape([1, 1]);
 
             if let (Some(prev_x), Some(prev_u)) = (&self.prev_x, &self.prev_u) {
-                self.train_step(
+                let (critic_loss, actor_loss) = self.train_step(
                     prev_x.clone(),
                     prev_u.clone(),
                     reward,
                     CriticUpdate::Terminal,
                 );
+
+                self.episode.reward += reward_value;
+                self.episode.critic_loss_sum += critic_loss;
+                self.episode.actor_loss_sum += actor_loss;
+                self.episode.train_steps += 1;
             }
 
+            self.log_episode(true);
             game.bind_mut().reset();
             self.reset_episode();
             return;
@@ -198,24 +275,29 @@ impl INode3D for Agent {
             let new_progress = game.bind().track_progress();
             let new_rings_passed = game.bind().rings_passed();
 
-            let progress_reward = (new_progress - self.track_progress) * 5.0;
-            let rings_reward = (new_rings_passed - self.rings_passed) as f32 * 10.0;
+            let progress_reward = (new_progress - self.episode.track_progress) * 5.0;
+            let rings_reward = (new_rings_passed - self.episode.rings_passed) as f32 * 10.0;
 
             let living_penalty = 0.05 * delta;
 
-            let reward = progress_reward + rings_reward - living_penalty;
-            let reward = Tensor::<Backend, 1>::from_floats([reward], &self.device).reshape([1, 1]);
+            let reward_value = progress_reward + rings_reward - living_penalty;
+            let reward =
+                Tensor::<Backend, 1>::from_floats([reward_value], &self.device).reshape([1, 1]);
 
             // Perform normal train step
-            self.train_step(
+            let (critic_loss, actor_loss) = self.train_step(
                 prev_x.clone(),
                 prev_u.clone(),
                 reward,
                 CriticUpdate::Normal(x.clone()),
             );
 
-            self.track_progress = new_progress;
-            self.rings_passed = new_rings_passed;
+            self.episode.reward += reward_value;
+            self.episode.critic_loss_sum += critic_loss;
+            self.episode.actor_loss_sum += actor_loss;
+            self.episode.train_steps += 1;
+            self.episode.track_progress = new_progress;
+            self.episode.rings_passed = new_rings_passed;
         }
 
         self.prev_x = Some(x);
@@ -279,13 +361,14 @@ impl Agent {
     }
 
     /// Perform one training step.
+    /// Returns the critic and actor loss values.
     pub fn train_step(
         &mut self,
         x: Tensor<Backend, 2>,
         u: Tensor<Backend, 2>,
         reward: Tensor<Backend, 2>,
         critic_update: CriticUpdate,
-    ) {
+    ) -> (f32, f32) {
         // 1. critic update
         let target = match critic_update {
             CriticUpdate::Normal(x_next) => {
@@ -298,6 +381,11 @@ impl Agent {
 
         let j_pred = self.critic.forward(x.clone(), u.clone());
         let critic_loss = (target - j_pred).powf_scalar(2.0).mean();
+        let critic_loss_value = critic_loss
+            .clone()
+            .into_data()
+            .to_vec::<f32>()
+            .expect("Failed to read critic loss")[0];
 
         let grads = critic_loss.backward();
         let grads = GradientsParams::from_grads(grads, &self.critic);
@@ -309,6 +397,11 @@ impl Agent {
         let u_pred = self.actor.forward(x.clone());
         let j_for_actor = self.critic.forward(x, u_pred).mean();
         let actor_loss = j_for_actor.neg();
+        let actor_loss_value = actor_loss
+            .clone()
+            .into_data()
+            .to_vec::<f32>()
+            .expect("Failed to read actor loss")[0];
 
         let grads = actor_loss.backward();
         let grads = GradientsParams::from_grads(grads, &self.actor);
@@ -319,6 +412,8 @@ impl Agent {
         // 3. Polyak averaging
         self.actor_target.polyak_update(&self.actor, self.tau);
         self.critic_target.polyak_update(&self.critic, self.tau);
+
+        (critic_loss_value, actor_loss_value)
     }
 
     /// Perform a certain action in the simulation.
@@ -363,14 +458,107 @@ impl Agent {
         return false;
     }
 
+    /// Add decayed OU exploration noise to an action tensor, clamping to [-1, 1]
+    /// since actor outputs are assumed normalized before being scaled by the
+    /// input ranges in `act`.
+    fn add_exploration_noise(&mut self, u: Tensor<Backend, 2>) -> Tensor<Backend, 2> {
+        let noise = self.action_noise.sample();
+        let noise_tensor = Tensor::<Backend, 1>::from_floats(noise.as_slice(), &self.device)
+            .reshape([1, ACTION_DIM]);
+
+        (u + noise_tensor).clamp(-1.0, 1.0)
+    }
+
     /// Reset the episode.
     fn reset_episode(&mut self) {
-        godot_print!("Episode completed. Final progress {0}", self.track_progress);
+        self.episode_count += 1;
+        if self.episode_count % 100 == 0 {
+            self.save_checkpoint();
+        }
 
-        self.episode_time = 0.0;
-        self.track_progress = 0.0;
-        self.rings_passed = 0;
+        self.episode = EpisodeState::new();
         self.prev_u = None;
         self.prev_x = None;
+        self.action_noise.reset();
+    }
+
+    /// Append this episode's stats as one row in the training log CSV.
+    /// Writes a header row if the file doesn't exist yet.
+    fn log_episode(&self, crashed: bool) {
+        use std::io::Write;
+
+        let log_path = format!("{}training_log.csv", self.log_dir);
+
+        let file_exists = std::path::Path::new(&log_path).exists();
+
+        let mut file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                godot_error!("Failed to open training log: {e}");
+                return;
+            }
+        };
+
+        if !file_exists {
+            let header = "episode_time,track_progress,rings_passed,episode_reward,avg_critic_loss,avg_actor_loss,noise_scale,crashed\n";
+            if let Err(e) = file.write_all(header.as_bytes()) {
+                godot_error!("Failed to write CSV header: {e}");
+                return;
+            }
+        }
+
+        let avg_critic_loss = if self.episode.train_steps > 0 {
+            self.episode.critic_loss_sum / self.episode.train_steps as f32
+        } else {
+            0.0
+        };
+        let avg_actor_loss = if self.episode.train_steps > 0 {
+            self.episode.actor_loss_sum / self.episode.train_steps as f32
+        } else {
+            0.0
+        };
+
+        let row = format!(
+            "{},{},{},{},{},{},{},{}\n",
+            self.episode.time,
+            self.episode.track_progress,
+            self.episode.rings_passed,
+            self.episode.reward,
+            avg_critic_loss,
+            avg_actor_loss,
+            self.action_noise.scale(),
+            crashed,
+        );
+
+        if let Err(e) = file.write_all(row.as_bytes()) {
+            godot_error!("Failed to write CSV row: {e}");
+        }
+
+        godot_print!("Episode completed: {}", row);
+    }
+
+    /// Save the current actor and critic model weights to disk.
+    /// Call this periodically (e.g. every N episodes) or on demand.
+    pub fn save_checkpoint(&self) {
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+
+        if let Err(e) = self.actor.clone().save_file(
+            format!("{}/actor_{}", self.log_dir, self.episode_count),
+            &recorder,
+        ) {
+            godot_print!("Failed to save actor: {e}");
+        }
+        if let Err(e) = self.critic.clone().save_file(
+            format!("{}/critic_{}", self.log_dir, self.episode_count),
+            &recorder,
+        ) {
+            godot_print!("Failed to save critic: {e}");
+        }
+
+        godot_print!("Saved checkpoint");
     }
 }

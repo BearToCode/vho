@@ -4,6 +4,7 @@ mod agent;
 mod game;
 mod helicopter;
 mod networks;
+mod noise;
 mod ring;
 mod track;
 

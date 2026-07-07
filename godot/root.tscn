@@ -13,6 +13,7 @@ helicopter = NodePath("Helicopter")
 
 [node name="Agent" type="Agent" parent="." unique_id=326518141 node_paths=PackedStringArray("game")]
 game = NodePath("..")
+max_episode_time = 10.0
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_gxo8o")]
 can_sleep = false
