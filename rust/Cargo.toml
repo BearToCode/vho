@@ -7,6 +7,6 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-burn = { version = "0.21.0", features = ["wgpu", "autodiff"] }
+burn = { version = "0.21.0", features = ["wgpu", "autodiff", "cuda", "flex"] }
 godot = "0.5.4"
 nalgebra = "0.35.0"

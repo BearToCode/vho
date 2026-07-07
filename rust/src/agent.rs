@@ -2,7 +2,7 @@ use burn::{
     Tensor,
     backend::{
         Autodiff,
-        wgpu::{Wgpu, WgpuDevice},
+        flex::{Flex, FlexDevice},
     },
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
 };
@@ -15,34 +15,58 @@ use crate::{
     ring::Ring,
 };
 
-type Backend = Autodiff<Wgpu>;
+/// The Burn backend to use. Flex is a lightweight Rust backend that runs on the CPU.
+type Backend = Autodiff<Flex>;
 
+/// Dimension of the state input of the model.
 const STATE_DIM: usize = 14;
+/// Dimension of the action output of the model.
 const ACTION_DIM: usize = 4;
 
 #[derive(GodotClass)]
 #[class(base=Node3D)]
+/// Godot class for the agent, which handles the training.
 pub struct Agent {
     base: Base<Node3D>,
 
     // RL data
-    device: WgpuDevice,
-    actor_model: ActorModel<Backend>,
-    critic_model: CriticModel<Backend>,
+    /// The device the training runs on.
+    device: FlexDevice,
+    /// The online actor model.
+    actor: ActorModel<Backend>,
+    /// The online critic model.
+    critic: CriticModel<Backend>,
+    /// The actor target model.
+    actor_target: ActorModel<Backend>,
+    /// The critic target model.
+    critic_target: CriticModel<Backend>,
+    /// Adam optimizer for the actor model.
     actor_optimizer: OptimizerAdaptor<Adam, ActorModel<Backend>, Backend>,
+    /// Adam optimizer for the critic model.
     critic_optimizer: OptimizerAdaptor<Adam, CriticModel<Backend>, Backend>,
 
     // RL params
+    /// Actor model learning rate.
     actor_lr: f64,
+    /// Critic model learning rate.
     critic_lr: f64,
+    /// Gamma parameter of the Bellman function.
     gamma: f32,
+    /// Tau parameter for Polyak updates.
+    tau: f32,
+    /// Maximum duration of each episode in seconds.
     max_episode_time: f32,
 
     // RL states
+    /// Current episode time.
     episode_time: f32,
+    /// Current progression along the track.
     track_progress: f32,
+    /// Current number of rings passed.
     rings_passed: usize,
+    /// Previous state tensor.
     prev_x: Option<Tensor<Backend, 2>>,
+    /// Previous action tensor.
     prev_u: Option<Tensor<Backend, 2>>,
 
     // Godot params
@@ -50,32 +74,47 @@ pub struct Agent {
     game: Option<Gd<Game>>,
     #[export_group(name = "Input Ranges")]
     #[export]
+    /// Range of allowed collective action values (-range, +range)
     collective_range: f32,
     #[export]
+    /// Range of allowed lateral cyclic action values (-range, +range)
     lateral_cyclic_range: f32,
     #[export]
+    /// Range of allowed longitudinal cyclic action values (-range, +range)
     longitudinal_cyclic_range: f32,
     #[export]
+    /// Range of allowed tail rotor cyclic action values (-range, +range)
     tail_rotor_cyclic_range: f32,
 }
 
-pub enum TrainingStep {
+/// Type of critic update to perform.
+pub enum CriticUpdate {
+    /// This is a terminal update. The target value is equal to the reward.
     Terminal,
+    /// Normal update. The target value is reward + j_next * gamma
     Normal(Tensor<Backend, 2>),
 }
 
 #[godot_api]
 impl INode3D for Agent {
     fn init(base: Base<Node3D>) -> Self {
-        let device = WgpuDevice::DefaultDevice;
+        let device = FlexDevice;
+
+        let actor = ActorModel::new(STATE_DIM, ACTION_DIM, &device);
+        let critic = CriticModel::new(STATE_DIM, ACTION_DIM, &device);
+
+        let actor_target = actor.clone();
+        let critic_target = critic.clone();
 
         Self {
             base,
 
             // RL data
             device: device.clone(),
-            actor_model: ActorModel::new(STATE_DIM, ACTION_DIM, &device),
-            critic_model: CriticModel::new(STATE_DIM, ACTION_DIM, &device),
+            actor,
+            critic,
+            actor_target,
+            critic_target,
             actor_optimizer: AdamConfig::new().build().into(),
             critic_optimizer: AdamConfig::new().build().into(),
 
@@ -83,6 +122,7 @@ impl INode3D for Agent {
             actor_lr: 1e-4,
             critic_lr: 1e-3,
             gamma: 0.95,
+            tau: 0.005,
             max_episode_time: 5.0,
 
             // RL states
@@ -106,16 +146,14 @@ impl INode3D for Agent {
         let mut game: Gd<Game> = self.game.clone().unwrap();
         let helicopter: Gd<Helicopter> = game.bind().helicopter.clone().unwrap();
 
-        {
-            if self.episode_time > self.max_episode_time {
-                game.bind_mut().reset();
-                self.reset_episode();
+        if self.episode_time > self.max_episode_time {
+            game.bind_mut().reset();
+            self.reset_episode();
 
-                return;
-            }
+            return;
         }
 
-        // Get current state
+        // Let the agent act based on the current state
         let (x, u) = {
             let game_bind = game.bind();
             let track_bind = game_bind.track.as_ref().unwrap().bind();
@@ -125,7 +163,7 @@ impl INode3D for Agent {
             let helicopter = game_bind.helicopter.as_ref().unwrap();
 
             let x = self.get_state(helicopter.clone(), current_ring, next_ring);
-            let u = self.actor_model.forward(x.clone());
+            let u = self.actor.forward(x.clone());
 
             self.act(u.clone(), helicopter.clone());
 
@@ -143,7 +181,7 @@ impl INode3D for Agent {
                     prev_x.clone(),
                     prev_u.clone(),
                     reward,
-                    TrainingStep::Terminal,
+                    CriticUpdate::Terminal,
                 );
             }
 
@@ -152,10 +190,11 @@ impl INode3D for Agent {
             return;
         }
 
+        // Train all the networks
         if let Some(prev_x) = self.prev_x.as_ref()
             && let Some(prev_u) = self.prev_u.as_ref()
         {
-            // Train all the networks
+            // Compute reward
             let new_progress = game.bind().track_progress();
             let new_rings_passed = game.bind().rings_passed();
 
@@ -167,11 +206,12 @@ impl INode3D for Agent {
             let reward = progress_reward + rings_reward - living_penalty;
             let reward = Tensor::<Backend, 1>::from_floats([reward], &self.device).reshape([1, 1]);
 
+            // Perform normal train step
             self.train_step(
                 prev_x.clone(),
                 prev_u.clone(),
                 reward,
-                TrainingStep::Normal(x.clone()),
+                CriticUpdate::Normal(x.clone()),
             );
 
             self.track_progress = new_progress;
@@ -184,6 +224,7 @@ impl INode3D for Agent {
 }
 
 impl Agent {
+    /// Get the state tensor from the simulation.
     fn get_state(
         &self,
         helicopter: Gd<Helicopter>,
@@ -243,37 +284,41 @@ impl Agent {
         x: Tensor<Backend, 2>,
         u: Tensor<Backend, 2>,
         reward: Tensor<Backend, 2>,
-        step: TrainingStep,
+        critic_update: CriticUpdate,
     ) {
         // 1. critic update
-        let target = match step {
-            TrainingStep::Normal(x_next) => {
-                let u_next = self.actor_model.forward(x_next.clone()).detach();
-                let j_next = self.critic_model.forward(x_next, u_next).detach();
+        let target = match critic_update {
+            CriticUpdate::Normal(x_next) => {
+                let u_next = self.actor_target.forward(x_next.clone()).detach();
+                let j_next = self.critic_target.forward(x_next, u_next).detach();
                 reward + j_next.mul_scalar(self.gamma)
             }
-            TrainingStep::Terminal => reward,
+            CriticUpdate::Terminal => reward,
         };
 
-        let j_pred = self.critic_model.forward(x.clone(), u.clone());
+        let j_pred = self.critic.forward(x.clone(), u.clone());
         let critic_loss = (target - j_pred).powf_scalar(2.0).mean();
 
         let grads = critic_loss.backward();
-        let grads = GradientsParams::from_grads(grads, &self.critic_model);
-        self.critic_model =
-            self.critic_optimizer
-                .step(self.critic_lr, self.critic_model.clone(), grads);
+        let grads = GradientsParams::from_grads(grads, &self.critic);
+        self.critic = self
+            .critic_optimizer
+            .step(self.critic_lr, self.critic.clone(), grads);
 
         // 2. actor update (maximize J)
-        let u_pred = self.actor_model.forward(x.clone());
-        let j_for_actor = self.critic_model.forward(x, u_pred).mean();
+        let u_pred = self.actor.forward(x.clone());
+        let j_for_actor = self.critic.forward(x, u_pred).mean();
         let actor_loss = j_for_actor.neg();
 
         let grads = actor_loss.backward();
-        let grads = GradientsParams::from_grads(grads, &self.actor_model);
-        self.actor_model =
-            self.actor_optimizer
-                .step(self.actor_lr, self.actor_model.clone(), grads);
+        let grads = GradientsParams::from_grads(grads, &self.actor);
+        self.actor = self
+            .actor_optimizer
+            .step(self.actor_lr, self.actor.clone(), grads);
+
+        // 3. Polyak averaging
+        self.actor_target.polyak_update(&self.actor, self.tau);
+        self.critic_target.polyak_update(&self.critic, self.tau);
     }
 
     /// Perform a certain action in the simulation.
@@ -299,7 +344,7 @@ impl Agent {
         helicopter_bind.tail_rotor_cyclic = self.tail_rotor_cyclic_range * control_normalized[3];
     }
 
-    /// Check constraints.
+    /// Check if the helicopter is flying in a invalid state.
     fn crashing(&self, helicopter: Gd<Helicopter>) -> bool {
         let helicopter_bind = helicopter.bind();
         let helicopter_state = helicopter_bind.get_state_vector();
@@ -318,6 +363,7 @@ impl Agent {
         return false;
     }
 
+    /// Reset the episode.
     fn reset_episode(&mut self) {
         godot_print!("Episode completed. Final progress {0}", self.track_progress);
 
