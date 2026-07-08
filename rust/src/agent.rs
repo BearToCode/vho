@@ -4,6 +4,7 @@ use burn::{
         Autodiff,
         flex::{Flex, FlexDevice},
     },
+    grad_clipping::GradientClippingConfig,
     module::Module,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
@@ -124,7 +125,18 @@ pub struct Agent {
     /// Maximum duration of each episode in seconds.
     max_episode_time: f32,
 
-    #[export_group(name = "Exploration Noise")]
+    #[export_subgroup(name = "Rewards")]
+    #[export]
+    /// Reward for passing a ring.
+    reward_per_ring: f32,
+    #[export]
+    /// Reward for progressing along the track.
+    reward_per_progress: f32,
+    #[export]
+    /// Penalty for crashing the helicopter (flying in an invalid state).
+    penalty_per_crash: f32,
+
+    #[export_subgroup(name = "Exploration Noise")]
     #[export]
     use_exploration_noise: bool,
     #[export]
@@ -138,6 +150,16 @@ pub struct Agent {
     /// Tau parameter for Polyak updates.
     tau: f32,
 
+    #[export_subgroup(name = "Replay Batch")]
+    #[export]
+    use_replay_buffer: bool,
+    #[export]
+    /// Number of transitions to sample per training step.
+    batch_size: i64,
+    #[export]
+    /// Minimum buffer size before training starts.
+    min_buffer_size: i64,
+
     #[export_subgroup(name = "Learning Rates")]
     #[export]
     /// Actor model learning rate.
@@ -145,14 +167,6 @@ pub struct Agent {
     #[export]
     /// Critic model learning rate.
     critic_learning_rate: f64,
-
-    #[export_subgroup(name = "Replay Buffer")]
-    #[export]
-    /// Number of transitions to sample per training step.
-    batch_size: i64,
-    #[export]
-    /// Minimum buffer size before training starts.
-    min_buffer_size: i64,
 
     #[export_group(name = "Input Ranges")]
     #[export]
@@ -190,6 +204,8 @@ impl INode3D for Agent {
             godot_error!("Failed to create run directory {log_dir}: {e}");
         }
 
+        use GradientClippingConfig;
+
         Self {
             base,
 
@@ -199,8 +215,14 @@ impl INode3D for Agent {
             critic,
             actor_target,
             critic_target,
-            actor_optimizer: AdamConfig::new().build().into(),
-            critic_optimizer: AdamConfig::new().build().into(),
+            actor_optimizer: AdamConfig::new()
+                .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
+                .build()
+                .into(),
+            critic_optimizer: AdamConfig::new()
+                .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
+                .build()
+                .into(),
 
             // RL params
             actor_learning_rate: 1e-4,
@@ -209,23 +231,29 @@ impl INode3D for Agent {
             gamma: 0.95,
             max_episode_time: 10.0,
 
+            reward_per_ring: 10.0,
+            reward_per_progress: 3.0,
+            penalty_per_crash: -10.0,
+
             use_exploration_noise: true,
             noise_decay_time: 20_000.0,
 
             use_target: true,
             tau: 0.005,
 
+            use_replay_buffer: true,
+            batch_size: 128,
+            min_buffer_size: 1_000,
+
             // RL states
             total_training_time: 0.0,
             episode_count: 0,
             episode: EpisodeState::new(),
             action_noise: OuNoise::new(ACTION_DIM, 0.15, 0.2, 0xC0FFEE),
+            replay_buffer: ReplayBuffer::new(100_000, 0xDEADBEEF),
+
             prev_u: None,
             prev_x: None,
-
-            batch_size: 32,
-            min_buffer_size: 1_000,
-            replay_buffer: ReplayBuffer::new(100_000, 0xDEADBEEF),
 
             load_model_dir: GString::new(),
             load_model_iteration: 0,
@@ -291,63 +319,48 @@ impl INode3D for Agent {
             (x, u)
         };
 
-        // Check if the helicopter is crashing
-        if self.is_crashing(helicopter.clone()) {
-            let crash_penalty = 30.0;
-            let reward_value = -crash_penalty;
-
-            if let (Some(prev_x), Some(prev_u)) = (&self.prev_x, &self.prev_u) {
-                self.replay_buffer.push(
-                    Self::tensor_to_vec(prev_x),
-                    Self::tensor_to_vec(prev_u),
-                    reward_value,
-                    None, // terminal
-                );
-                self.episode.reward += reward_value;
-            }
-
-            let (critic_loss, actor_loss) = self.train_from_buffer();
-
-            self.episode.critic_loss_sum += critic_loss;
-            self.episode.actor_loss_sum += actor_loss;
-            self.episode.train_steps += 1;
-
-            self.log_episode(true);
-            game.bind_mut().reset();
-            self.reset_episode();
-            return;
-        }
-
         // Train all the networks
+        let new_progress = game.bind().track_progress();
+        let new_rings_passed = game.bind().rings_passed();
+
         if let Some(prev_x) = self.prev_x.as_ref()
             && let Some(prev_u) = self.prev_u.as_ref()
         {
-            let new_progress = game.bind().track_progress();
-            let new_rings_passed = game.bind().rings_passed();
+            let progress_reward =
+                (new_progress - self.episode.track_progress) * self.reward_per_progress;
+            let rings_reward =
+                (new_rings_passed - self.episode.rings_passed) as f32 * self.reward_per_ring;
+            let crashing_penalty =
+                self.is_crashing(helicopter) as usize as f32 * self.penalty_per_crash * delta;
+            let reward_value = progress_reward + rings_reward + crashing_penalty;
 
-            let progress_reward = (new_progress - self.episode.track_progress) * 0.1;
-            let rings_reward = (new_rings_passed - self.episode.rings_passed) as f32 * 10.0;
-            let living_reward = 1.0 * delta;
-            let reward_value = progress_reward + rings_reward + living_reward;
+            let reward =
+                Tensor::<Backend, 1>::from_floats([reward_value], &self.device).reshape([1, 1]);
 
-            self.replay_buffer.push(
-                Self::tensor_to_vec(prev_x),
-                Self::tensor_to_vec(prev_u),
-                reward_value,
-                Some(Self::tensor_to_vec(&x)),
-            );
-
+            // Actually train every train_every_n_frames steps, otherwise just accumulate the reward.
             if self.episode.frame_count % (self.train_every_n_frames as usize) == 0 {
-                let (critic_loss, actor_loss) = self.train_from_buffer();
+                let (critic_loss, actor_loss) = if self.use_replay_buffer {
+                    self.replay_buffer.push(
+                        Self::tensor_to_vec(prev_x),
+                        Self::tensor_to_vec(prev_u),
+                        reward_value,
+                        None, // terminal
+                    );
+                    self.train_from_buffer()
+                } else {
+                    self.train_step(prev_x.clone(), prev_u.clone(), reward, x.clone())
+                };
+
                 self.episode.critic_loss_sum += critic_loss;
                 self.episode.actor_loss_sum += actor_loss;
                 self.episode.train_steps += 1;
             }
 
             self.episode.reward += reward_value;
-            self.episode.track_progress = new_progress;
-            self.episode.rings_passed = new_rings_passed;
         }
+
+        self.episode.track_progress = new_progress;
+        self.episode.rings_passed = new_rings_passed;
 
         self.prev_x = Some(x);
         self.prev_u = Some(u);
@@ -417,6 +430,57 @@ impl Agent {
         .reshape([1, STATE_DIM]);
     }
 
+    /// Perform one training step.
+    /// Returns the critic and actor loss values.
+    pub fn train_step(
+        &mut self,
+        x: Tensor<Backend, 2>,
+        u: Tensor<Backend, 2>,
+        reward: Tensor<Backend, 2>,
+        x_next: Tensor<Backend, 2>,
+    ) -> (f32, f32) {
+        // 1. critic update
+        let u_next = self.actor_target.forward(x_next.clone()).detach();
+        let j_next = self.critic_target.forward(x_next, u_next).detach();
+        let target = reward + j_next.mul_scalar(self.gamma);
+
+        let j_pred = self.critic.forward(x.clone(), u.clone());
+        let critic_loss = (target - j_pred).powf_scalar(2.0).mean();
+        let critic_loss_value = critic_loss
+            .clone()
+            .into_data()
+            .to_vec::<f32>()
+            .expect("Failed to read critic loss")[0];
+
+        let grads = critic_loss.backward();
+        let grads = GradientsParams::from_grads(grads, &self.critic);
+        self.critic =
+            self.critic_optimizer
+                .step(self.critic_learning_rate, self.critic.clone(), grads);
+
+        // 2. actor update (maximize J)
+        let u_pred = self.actor.forward(x.clone());
+        let j_for_actor = self.critic.forward(x, u_pred).mean();
+        let actor_loss = j_for_actor.neg();
+        let actor_loss_value = actor_loss
+            .clone()
+            .into_data()
+            .to_vec::<f32>()
+            .expect("Failed to read actor loss")[0];
+
+        let grads = actor_loss.backward();
+        let grads = GradientsParams::from_grads(grads, &self.actor);
+        self.actor = self
+            .actor_optimizer
+            .step(self.actor_learning_rate, self.actor.clone(), grads);
+
+        // 3. Polyak averaging
+        self.actor_target.polyak_update(&self.actor, self.tau);
+        self.critic_target.polyak_update(&self.critic, self.tau);
+
+        (critic_loss_value, actor_loss_value)
+    }
+
     /// Sample a minibatch from the replay buffer and perform one training
     /// step on it. Returns (0.0, 0.0) if there isn't enough data yet to
     /// sample a full batch (no-op, but still counted in episode stats as a
@@ -459,14 +523,8 @@ impl Agent {
                 .reshape([bs, 1]);
 
         // 1. critic update
-        let j_next = if self.use_target {
-            let u_next = self.actor_target.forward(next_states.clone()).detach();
-            self.critic_target.forward(next_states, u_next).detach()
-        } else {
-            let u_next = self.actor.forward(next_states.clone()).detach();
-            self.critic.forward(next_states, u_next).detach()
-        };
-
+        let u_next = self.actor_target.forward(next_states.clone()).detach();
+        let j_next = self.critic_target.forward(next_states, u_next).detach();
         let target = rewards + j_next.mul_scalar(self.gamma) * non_terminal_mask;
 
         let j_pred = self.critic.forward(states.clone(), actions.clone());
@@ -500,10 +558,8 @@ impl Agent {
             .step(self.actor_learning_rate, self.actor.clone(), grads);
 
         // 3. Polyak averaging
-        if self.use_target {
-            self.actor_target.polyak_update(&self.actor, self.tau);
-            self.critic_target.polyak_update(&self.critic, self.tau);
-        }
+        self.actor_target.polyak_update(&self.actor, self.tau);
+        self.critic_target.polyak_update(&self.critic, self.tau);
 
         (critic_loss_value, actor_loss_value)
     }
