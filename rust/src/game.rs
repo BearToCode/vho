@@ -12,6 +12,11 @@ pub struct Game {
     rings_passed: usize,
     game_ended: bool,
 
+    helicopter_initial_position: Vector3,
+    helicopter_initial_rotation: Vector3,
+    helicopter_initial_linear_velocity: Vector3,
+    helicopter_initial_angular_velocity: Vector3,
+
     #[export]
     pub track: Option<Gd<Track>>,
     #[export]
@@ -29,6 +34,11 @@ impl INode3D for Game {
             rings_passed: 0,
             game_ended: false,
 
+            helicopter_initial_position: Vector3::ZERO,
+            helicopter_initial_rotation: Vector3::ZERO,
+            helicopter_initial_linear_velocity: Vector3::ZERO,
+            helicopter_initial_angular_velocity: Vector3::ZERO,
+
             track: None,
             helicopter: None,
         }
@@ -36,6 +46,16 @@ impl INode3D for Game {
 
     fn ready(&mut self) {
         let mut this = self.to_gd();
+
+        let helicopter = self
+            .helicopter
+            .as_ref()
+            .expect("Game is missing the helicopter");
+
+        self.helicopter_initial_position = helicopter.get_global_position();
+        self.helicopter_initial_rotation = helicopter.get_global_rotation();
+        self.helicopter_initial_linear_velocity = helicopter.get_linear_velocity();
+        self.helicopter_initial_angular_velocity = helicopter.get_angular_velocity();
 
         let track = self.track.as_mut().expect("Game is missing the track");
         let mut track_bind = track.bind_mut();
@@ -100,10 +120,10 @@ impl Game {
             .expect("Game is missing the helicopter");
         let track = self.track.as_mut().expect("Game is missing the track");
 
-        helicopter.set_position(Vector3::ZERO);
-        helicopter.set_linear_velocity(Vector3::ZERO);
-        helicopter.set_rotation(Vector3::ZERO);
-        helicopter.set_angular_velocity(Vector3::ZERO);
+        helicopter.set_position(self.helicopter_initial_position);
+        helicopter.set_linear_velocity(self.helicopter_initial_linear_velocity);
+        helicopter.set_rotation(self.helicopter_initial_rotation);
+        helicopter.set_angular_velocity(self.helicopter_initial_angular_velocity);
 
         track.bind_mut().current_ring_index = 0;
 

@@ -2,6 +2,7 @@ mod action;
 mod adhdp;
 mod agent;
 mod episode;
+mod networks;
 mod reward;
 mod state;
 

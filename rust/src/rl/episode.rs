@@ -7,6 +7,8 @@ pub struct Episode {
     pub time: f32,
     /// Number of steps elapsed.
     pub steps: usize,
+    /// Noise factor for this episode, in [0, 1].
+    pub noise: f32,
 
     /// Progression along the track.
     pub track_progress: f32,
@@ -28,6 +30,7 @@ impl Episode {
         Episode {
             time: 0.0,
             steps: 0,
+            noise: 0.0,
             track_progress: 0.0,
             rings_passed: 0,
             accumulated_reward: 0.0,
@@ -59,7 +62,7 @@ impl Episode {
         };
 
         if !file_exists {
-            let header = "episode_time,steps,track_progress,rings_passed,episode_reward,avg_critic_loss,avg_actor_loss\n";
+            let header = "episode_time,steps,noise,track_progress,rings_passed,episode_reward,avg_critic_loss,avg_actor_loss\n";
             if let Err(e) = file.write_all(header.as_bytes()) {
                 godot_error!("Failed to write CSV header: {e}");
                 return;
@@ -78,9 +81,10 @@ impl Episode {
         };
 
         let row = format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{}\n",
             self.time,
             self.steps,
+            self.noise,
             self.track_progress,
             self.rings_passed,
             self.accumulated_reward,
@@ -110,13 +114,14 @@ impl Display for Episode {
         write!(
             f,
             "t: {:.2} \t| pgr: {:.2} \t| rings: {} \t| rwd: {:.2} \t| critic_loss: {:.2} \t| \
-             actor_loss: {:.2}",
+             actor_loss: {:.2} | noise: {:.2}",
             self.time,
             self.track_progress,
             self.rings_passed,
             self.accumulated_reward,
             avg_critic_loss,
-            avg_actor_loss
+            avg_actor_loss,
+            self.noise
         )
     }
 }

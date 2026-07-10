@@ -6,16 +6,14 @@ use burn::prelude::*;
 pub struct CriticModel<B: Backend> {
     l1: Linear<B>,
     l2: Linear<B>,
-    l3: Linear<B>,
     relu: Relu,
 }
 
 impl<B: Backend> CriticModel<B> {
     pub fn new(state_dim: usize, action_dim: usize, device: &B::Device) -> Self {
         Self {
-            l1: LinearConfig::new(state_dim + action_dim, 8).init(device),
-            l2: LinearConfig::new(8, 8).init(device),
-            l3: LinearConfig::new(8, 1).init(device),
+            l1: LinearConfig::new(state_dim + action_dim, 32).init(device),
+            l2: LinearConfig::new(32, 1).init(device),
             relu: Relu::new(),
         }
     }
@@ -24,8 +22,7 @@ impl<B: Backend> CriticModel<B> {
     pub fn forward(&self, state: Tensor<B, 2>, action: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = Tensor::cat(vec![state, action], 1);
         let x = self.relu.forward(self.l1.forward(x));
-        let x = self.relu.forward(self.l2.forward(x));
-        self.l3.forward(x) // scalar J
+        self.l2.forward(x) // scalar J
     }
 
     /// Performs a Polyak update of the model, with respect to an online model.
@@ -33,7 +30,6 @@ impl<B: Backend> CriticModel<B> {
     pub fn polyak_update(&mut self, online: &Self, tau: f32) {
         self.l1 = polyak_linear(&self.l1, &online.l1, tau);
         self.l2 = polyak_linear(&self.l2, &online.l2, tau);
-        self.l3 = polyak_linear(&self.l3, &online.l3, tau);
     }
 }
 
@@ -49,9 +45,9 @@ pub struct ActorModel<B: Backend> {
 impl<B: Backend> ActorModel<B> {
     pub fn new(state_dim: usize, action_dim: usize, device: &B::Device) -> Self {
         Self {
-            l1: LinearConfig::new(state_dim, 8).init(device),
-            l2: LinearConfig::new(8, 8).init(device),
-            l3: LinearConfig::new(8, action_dim).init(device),
+            l1: LinearConfig::new(state_dim, 16).init(device),
+            l2: LinearConfig::new(16, 4).init(device),
+            l3: LinearConfig::new(4, action_dim).init(device),
             relu: Relu::new(),
             tanh: Tanh::new(),
         }
@@ -60,8 +56,7 @@ impl<B: Backend> ActorModel<B> {
     /// Propagates the model.
     pub fn forward(&self, state: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.relu.forward(self.l1.forward(state));
-        let x = self.relu.forward(self.l2.forward(x));
-        self.tanh.forward(self.l3.forward(x)) // in [-1, 1]
+        self.tanh.forward(self.l2.forward(x)) // in [-1, 1]
     }
 
     /// Performs a Polyak update of the model, with respect to an online model.
@@ -69,7 +64,6 @@ impl<B: Backend> ActorModel<B> {
     pub fn polyak_update(&mut self, online: &Self, tau: f32) {
         self.l1 = polyak_linear(&self.l1, &online.l1, tau);
         self.l2 = polyak_linear(&self.l2, &online.l2, tau);
-        self.l3 = polyak_linear(&self.l3, &online.l3, tau);
     }
 }
 

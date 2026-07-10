@@ -8,6 +8,11 @@ pub fn reward_function_from_field(field_fn: FieldRewardFunction) -> RewardFuncti
 }
 
 #[allow(dead_code)]
+pub fn fwd_stability_reward_field(x: &AgentStateVector) -> f32 {
+    -x[AgentStateComponent::ForwardVelocity].powf(2.0)
+}
+
+#[allow(dead_code)]
 pub fn stability_reward_field(x: &AgentStateVector) -> f32 {
     (-x[AgentStateComponent::ForwardVelocity].powf(2.0)
         - x[AgentStateComponent::LateralVelocity].powf(2.0)

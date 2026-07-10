@@ -3,15 +3,16 @@ use burn::{
     backend::{Autodiff, flex::Flex},
 };
 use godot::prelude::*;
+use probability::source;
 
 use crate::{
     game::Game,
     rl::{
         DEVICE,
-        action::{PerformActionConfig, perform_action},
+        action::{PerformActionConfig, get_noise, perform_action},
         adhdp::{ADHDP, ADHDPStepTrainData, ADHDPTrainData},
         episode::Episode,
-        reward::{reward_function_from_field, stability_reward_field},
+        reward::{fwd_stability_reward_field, reward_function_from_field},
         state::{AgentStateVector, StateNormalizationConfig, get_agent_state, normalize_state},
     },
 };
@@ -44,13 +45,15 @@ pub struct Agent {
     previous_step: Option<StepData>,
     /// Specific subdirectory for this run.
     run_directory: String,
+    /// Noise source generator
+    noise_source: Option<source::Default>,
 
     /* Exported to the inspector */
     #[export]
     /// Reference to the game manager.
     game: Option<Gd<Game>>,
 
-    #[export_group(name = "Model saving and loading.")]
+    #[export_group(name = "Model saving and loading")]
     #[export]
     #[var(hint = DIR)]
     /// Output directory to write runs data to.
@@ -95,6 +98,17 @@ pub struct Agent {
     #[var(hint = NONE)]
     /// Critic model learning rate.
     critic_learning_rate: f64,
+
+    #[export_subgroup(name = "Noise")]
+    #[export]
+    /// Whether to use noise.
+    use_noise: bool,
+    #[export]
+    /// How many episodes to decrease noise in.
+    noise_episodes_decay: i64,
+    #[export]
+    /// Seed for the noise generator.
+    noise_seed: i64,
 
     #[export_subgroup(name = "State Normalization")]
     #[export]
@@ -142,6 +156,8 @@ impl INode3D for Agent {
             episode: Episode::new(),
             previous_step: None,
             run_directory: "".into(),
+            noise_source: None,
+            noise_seed: 1,
 
             /* Exported to the inspector */
             game: None,
@@ -160,6 +176,9 @@ impl INode3D for Agent {
 
             critic_learning_rate: 1e-3,
             actor_learning_rate: 1e-4,
+
+            use_noise: true,
+            noise_episodes_decay: 500,
 
             linear_velocity_scale: 1.0 / 50.0,
             angular_velocity_scale: 2.0,
@@ -211,6 +230,9 @@ impl INode3D for Agent {
                 e
             );
         }
+
+        // Generate noise source
+        self.noise_source = Some(source::default(self.noise_seed as u64));
     }
 
     fn physics_process(&mut self, delta: f32) {
@@ -248,9 +270,8 @@ impl INode3D for Agent {
         let x = normalize_state(&state, &normalization_config);
 
         if let Some(prev_step) = self.previous_step.as_ref() {
-            let reward_function = reward_function_from_field(stability_reward_field);
+            let reward_function = reward_function_from_field(fwd_stability_reward_field);
             let reward_value = reward_function(&prev_step.state, &state);
-            godot_print!("r: {}", reward_value);
             let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
 
             if self.episode.steps % (self.train_every_n_frames as usize) == 0 {
@@ -269,7 +290,20 @@ impl INode3D for Agent {
             self.episode.accumulated_reward += reward_value;
         }
 
-        let u = self.adhdp.act(x.clone());
+        let mut u = self.adhdp.act(x.clone());
+        // Add noise to the action if enabled
+        if self.use_noise && self.episode_count < self.noise_episodes_decay as usize {
+            self.episode.noise = (-((128.0 as f32).log(std::f32::consts::E)
+                * self.episode_count as f32
+                / self.noise_episodes_decay as f32))
+                .exp();
+
+            if let Some(noise_source) = self.noise_source.as_mut() {
+                let noise = get_noise(self.episode.noise, noise_source);
+                u = u + noise;
+            }
+        }
+
         perform_action(u.clone(), helicopter, &action_config);
 
         self.previous_step = Some(StepData { state, x, u });

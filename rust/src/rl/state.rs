@@ -142,10 +142,10 @@ pub fn normalize_state(
             agent_state[Agent::PitchAngle] * config.angle_scale,
             agent_state[Agent::CurrentRingPositionX] * config.position_scale,
             agent_state[Agent::CurrentRingPositionY] * config.position_scale,
-            agent_state[Agent::CurrentRingPositionY] * config.position_scale,
+            agent_state[Agent::CurrentRingPositionZ] * config.position_scale,
             agent_state[Agent::NextRingPositionX] * config.position_scale,
             agent_state[Agent::NextRingPositionY] * config.position_scale,
-            agent_state[Agent::NextRingPositionY] * config.position_scale,
+            agent_state[Agent::NextRingPositionZ] * config.position_scale,
         ],
         &DEVICE,
     )

@@ -1,6 +1,8 @@
-use crate::{
+use crate::rl::{
+    Backend, DEVICE,
+    action::ACTION_DIM,
     networks::{ActorModel, CriticModel},
-    rl::{Backend, DEVICE, action::ACTION_DIM, state::STATE_DIM},
+    state::STATE_DIM,
 };
 use burn::{
     Tensor,
@@ -131,7 +133,8 @@ impl ADHDP {
             .clone()
             .into_data()
             .to_vec::<f32>()
-            .expect("Failed to read actor loss")[0];
+            .expect("Failed to read actor loss")[0]
+            .abs();
 
         let grads = actor_loss.backward();
         let grads = GradientsParams::from_grads(grads, &self.actor);
