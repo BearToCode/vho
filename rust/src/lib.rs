@@ -1,12 +1,10 @@
 #![recursion_limit = "256"]
 
-mod agent;
 mod game;
 mod helicopter;
 mod networks;
-mod noise;
-mod replay_buffer;
 mod ring;
+mod rl;
 mod track;
 
 use godot::prelude::*;

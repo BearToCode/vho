@@ -5,14 +5,14 @@ use godot::prelude::*;
 
 use nalgebra::{SMatrix, SVector};
 
-type Matrix8x8f = SMatrix<f32, 8, 8>;
-type Matrix8x4f = SMatrix<f32, 8, 4>;
-type Vector8f = SVector<f32, 8>;
-type Vector4f = SVector<f32, 4>;
+type StateMatrix = SMatrix<f32, 8, 8>;
+type InputMatrix = SMatrix<f32, 8, 4>;
+type StateVector = SVector<f32, 8>;
+type InputVector = SVector<f32, 4>;
 
 /// Imperial state vector, used for linear dynamics.
 /// All velocities are in a body-fixed reference frame.
-pub enum HelicopterStateVectorComponent {
+pub enum HelicopterStateComponent {
     /// [ft/s] forward velocity
     U = 0,
     // [ft/s]  vertical velocity
@@ -32,7 +32,7 @@ pub enum HelicopterStateVectorComponent {
 }
 
 /// Helicopter control inputs.
-pub enum HelicopterInputsComponent {
+pub enum HelicopterInputComponent {
     /// longitudinal cyclic
     UY = 0,
     /// collective
@@ -43,35 +43,35 @@ pub enum HelicopterInputsComponent {
     UZ,
 }
 
-impl Index<HelicopterStateVectorComponent> for Vector8f {
+impl Index<HelicopterStateComponent> for StateVector {
     type Output = f32;
-    fn index(&self, index: HelicopterStateVectorComponent) -> &Self::Output {
+    fn index(&self, index: HelicopterStateComponent) -> &Self::Output {
         &self[index as usize]
     }
 }
 
-impl IndexMut<HelicopterStateVectorComponent> for Vector8f {
-    fn index_mut(&mut self, index: HelicopterStateVectorComponent) -> &mut Self::Output {
+impl IndexMut<HelicopterStateComponent> for StateVector {
+    fn index_mut(&mut self, index: HelicopterStateComponent) -> &mut Self::Output {
         return &mut self[index as usize];
     }
 }
 
-impl Index<HelicopterInputsComponent> for Vector4f {
+impl Index<HelicopterInputComponent> for InputVector {
     type Output = f32;
-    fn index(&self, index: HelicopterInputsComponent) -> &Self::Output {
+    fn index(&self, index: HelicopterInputComponent) -> &Self::Output {
         &self[index as usize]
     }
 }
 
-impl IndexMut<HelicopterInputsComponent> for Vector4f {
-    fn index_mut(&mut self, index: HelicopterInputsComponent) -> &mut Self::Output {
+impl IndexMut<HelicopterInputComponent> for InputVector {
+    fn index_mut(&mut self, index: HelicopterInputComponent) -> &mut Self::Output {
         return &mut self[index as usize];
     }
 }
 
 struct HelicopterLinearModel {
-    a: Matrix8x8f,
-    b: Matrix8x4f,
+    a: StateMatrix,
+    b: InputMatrix,
 }
 
 impl HelicopterLinearModel {
@@ -81,7 +81,7 @@ impl HelicopterLinearModel {
         const U0: f32 = 20.0 * 3.281; // 20 m/s
 
         Self {
-            a: Matrix8x8f::from_row_slice(&[
+            a: StateMatrix::from_row_slice(&[
                 //         |   u   |   w   |   q   | theta |   v   |   p   |   r   |  phi  |
                 /*   u   */  -0.01 ,  0.0  ,  0.0  ,   -G  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,
                 /*   w   */   0.0  , -1.0  ,   U0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,
@@ -92,7 +92,7 @@ impl HelicopterLinearModel {
                 /*   r   */   0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  , -1.0  ,  0.0  ,
                 /*  phi  */   0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  1.0  ,  0.0  ,  0.0  ,
             ]),
-            b: Matrix8x4f::from_row_slice(&[
+            b: InputMatrix::from_row_slice(&[
                 //         |  u_y  |  u_c  |  u_x  |  u_z  |
                 /*   u   */   0.0  ,  0.0  ,  0.0  ,  0.0  ,
                 /*   w   */   0.0  , -7.0  ,  0.0  ,  0.0  ,
@@ -105,16 +105,16 @@ impl HelicopterLinearModel {
             ]),
         }
     }
+}
 
-    /// Convert fts to meters
-    pub fn ft_to_m(value: f32) -> f32 {
-        value * 0.3048
-    }
+/// Convert fts to meters
+pub fn ft_to_m(value: f32) -> f32 {
+    value * 0.3048
+}
 
-    /// Convert meters to fts
-    pub fn m_to_ft(value: f32) -> f32 {
-        value / 0.3048
-    }
+/// Convert meters to fts
+pub fn m_to_ft(value: f32) -> f32 {
+    value / 0.3048
 }
 
 #[derive(GodotClass)]
@@ -122,8 +122,8 @@ impl HelicopterLinearModel {
 pub struct Helicopter {
     base: Base<RigidBody3D>,
 
-    state_vector: Vector8f,
-    inputs_vector: Vector4f,
+    state_vector: StateVector,
+    inputs_vector: InputVector,
 
     linear_model: HelicopterLinearModel,
 
@@ -157,8 +157,8 @@ impl IRigidBody3D for Helicopter {
             lateral_cyclic: 0.0,
             longitudinal_cyclic: 0.0,
             tail_rotor_cyclic: 0.0,
-            state_vector: Vector8f::zeros(),
-            inputs_vector: Vector4f::zeros(),
+            state_vector: StateVector::zeros(),
+            inputs_vector: InputVector::zeros(),
             linear_model: HelicopterLinearModel::new(),
             animate: true,
         }
@@ -171,7 +171,7 @@ impl IRigidBody3D for Helicopter {
             self.retrieve_state(s.clone());
             self.retrieve_inputs();
 
-            let state_vector_derivative: Vector8f =
+            let state_vector_derivative: StateVector =
                 self.linear_model.a * self.state_vector + self.linear_model.b * self.inputs_vector;
 
             self.apply_accelerations(s.clone(), state_vector_derivative);
@@ -187,7 +187,7 @@ impl IRigidBody3D for Helicopter {
 
 #[godot_api]
 impl Helicopter {
-    pub fn get_state_vector(&self) -> &Vector8f {
+    pub fn get_state_vector(&self) -> &StateVector {
         return &self.state_vector;
     }
 
@@ -206,10 +206,10 @@ impl Helicopter {
         //  | Right:                | +x    |   W/Q |
         //  | Up:                   | +y    |  -V/R |
 
-        type SV = HelicopterStateVectorComponent;
-        self.state_vector[SV::U] = HelicopterLinearModel::m_to_ft(-local_linear_velocity.z);
-        self.state_vector[SV::V] = HelicopterLinearModel::m_to_ft(local_linear_velocity.x);
-        self.state_vector[SV::W] = HelicopterLinearModel::m_to_ft(-local_linear_velocity.y);
+        type SV = HelicopterStateComponent;
+        self.state_vector[SV::U] = m_to_ft(-local_linear_velocity.z);
+        self.state_vector[SV::V] = m_to_ft(local_linear_velocity.x);
+        self.state_vector[SV::W] = m_to_ft(-local_linear_velocity.y);
 
         self.state_vector[SV::Phi] = -rotation.z;
         self.state_vector[SV::Theta] = rotation.x;
@@ -222,7 +222,7 @@ impl Helicopter {
     fn apply_accelerations(
         &mut self,
         state: Gd<PhysicsDirectBodyState3D>,
-        state_vector_derivative: Vector8f,
+        state_vector_derivative: StateVector,
     ) {
         let transform = state.get_transform();
         let local_to_global = transform.basis;
@@ -233,11 +233,11 @@ impl Helicopter {
         //  | Right:                | +x    |   W/Q |
         //  | Up:                   | +y    |   V/R |
 
-        type SV = HelicopterStateVectorComponent;
+        type SV = HelicopterStateComponent;
         let local_linear_acceleration = Vector3::new(
-            HelicopterLinearModel::ft_to_m(state_vector_derivative[SV::V]),
-            HelicopterLinearModel::ft_to_m(-state_vector_derivative[SV::W]),
-            HelicopterLinearModel::ft_to_m(-state_vector_derivative[SV::U]),
+            ft_to_m(state_vector_derivative[SV::V]),
+            ft_to_m(-state_vector_derivative[SV::W]),
+            ft_to_m(-state_vector_derivative[SV::U]),
         );
 
         let local_angular_acceleration = Vector3::new(
@@ -265,7 +265,7 @@ impl Helicopter {
 
     #[func]
     fn retrieve_inputs(&mut self) {
-        type Inputs = HelicopterInputsComponent;
+        type Inputs = HelicopterInputComponent;
         self.inputs_vector[Inputs::UX] = self.lateral_cyclic;
         self.inputs_vector[Inputs::UC] = self.collective;
         self.inputs_vector[Inputs::UY] = self.longitudinal_cyclic;

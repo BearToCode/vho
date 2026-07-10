@@ -13,9 +13,9 @@ pub struct CriticModel<B: Backend> {
 impl<B: Backend> CriticModel<B> {
     pub fn new(state_dim: usize, action_dim: usize, device: &B::Device) -> Self {
         Self {
-            l1: LinearConfig::new(state_dim + action_dim, 128).init(device),
-            l2: LinearConfig::new(128, 128).init(device),
-            l3: LinearConfig::new(128, 1).init(device),
+            l1: LinearConfig::new(state_dim + action_dim, 8).init(device),
+            l2: LinearConfig::new(8, 8).init(device),
+            l3: LinearConfig::new(8, 1).init(device),
             relu: Relu::new(),
         }
     }
@@ -29,6 +29,7 @@ impl<B: Backend> CriticModel<B> {
     }
 
     /// Performs a Polyak update of the model, with respect to an online model.
+    #[allow(dead_code)]
     pub fn polyak_update(&mut self, online: &Self, tau: f32) {
         self.l1 = polyak_linear(&self.l1, &online.l1, tau);
         self.l2 = polyak_linear(&self.l2, &online.l2, tau);
@@ -48,9 +49,9 @@ pub struct ActorModel<B: Backend> {
 impl<B: Backend> ActorModel<B> {
     pub fn new(state_dim: usize, action_dim: usize, device: &B::Device) -> Self {
         Self {
-            l1: LinearConfig::new(state_dim, 128).init(device),
-            l2: LinearConfig::new(128, 128).init(device),
-            l3: LinearConfig::new(128, action_dim).init(device),
+            l1: LinearConfig::new(state_dim, 8).init(device),
+            l2: LinearConfig::new(8, 8).init(device),
+            l3: LinearConfig::new(8, action_dim).init(device),
             relu: Relu::new(),
             tanh: Tanh::new(),
         }
@@ -64,6 +65,7 @@ impl<B: Backend> ActorModel<B> {
     }
 
     /// Performs a Polyak update of the model, with respect to an online model.
+    #[allow(dead_code)]
     pub fn polyak_update(&mut self, online: &Self, tau: f32) {
         self.l1 = polyak_linear(&self.l1, &online.l1, tau);
         self.l2 = polyak_linear(&self.l2, &online.l2, tau);
