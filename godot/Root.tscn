@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://bscasxqv2cklk"]
 
-[ext_resource type="PackedScene" uid="uid://cn2qtnumd5d4q" path="res://scenes/Helicopter.tscn" id="1_gxo8o"]
-[ext_resource type="PackedScene" uid="uid://bricnm2a2h4ag" path="res://scenes/Ring.tscn" id="2_24d08"]
+[ext_resource type="PackedScene" uid="uid://cn2qtnumd5d4q" path="res://scenes/Helicopter.tscn" id="1_24d08"]
+[ext_resource type="PackedScene" uid="uid://bricnm2a2h4ag" path="res://scenes/Ring.tscn" id="2_170dk"]
 
 [sub_resource type="Environment" id="Environment_6pmnr"]
 background_mode = 1
@@ -13,22 +13,24 @@ helicopter = NodePath("Helicopter")
 
 [node name="Agent" type="Agent" parent="." unique_id=326518141 node_paths=PackedStringArray("game")]
 game = NodePath("..")
+output_directory = "/home/davide/University/tudelft/bio-inspired-intelligence-and-learning/vho/output"
 train_every_n_frames = 4
-gamma = 0.989999999999997
-reward_per_progress = 4.999999999999985
-use_exploration_noise = false
-noise_decay_time = 5000.0
-use_target = false
-tau = 0.00999999999999997
-batch_size = 16
-min_buffer_size = 300
+gamma = 0.9
+max_episode_time = 15.0
+critic_hidden_layers = Array[int]([256, 256])
+actor_hidden_layers = Array[int]([256, 256])
+actor_learning_rate = 9.999999999999918e-06
+critic_learning_rate = 9.999999999999967e-05
+noise_update_threshold = 100.0
+use_target_networks = false
 
-[node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_gxo8o")]
+[node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_24d08")]
+transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 2.7574224, 0)
 can_sleep = false
 script = null
 
 [node name="Camera3D" type="Camera3D" parent="Helicopter" unique_id=1430266193]
-transform = Transform3D(1, 0, 0, 0, 0.9970813, 0.07634771, 0, -0.07634771, 0.9970813, -0.018649101, 7.771945, 13.805707)
+transform = Transform3D(-4.3711385e-08, 0.07634771, -0.9970813, 0, 0.9970813, 0.07634771, 1, 3.3372642e-09, -4.3583807e-08, -12.018648, 7.771945, 0.80570644)
 current = true
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1265862991]
@@ -42,19 +44,19 @@ directional_shadow_fade_start = 0.687
 [node name="Track" type="Track" parent="." unique_id=1399107581 node_paths=PackedStringArray("rings")]
 rings = [NodePath("Ring1"), NodePath("Ring2"), NodePath("Ring3"), NodePath("Ring4"), NodePath("Ring5")]
 
-[node name="Ring1" parent="Track" unique_id=2073540714 instance=ExtResource("2_24d08")]
+[node name="Ring1" parent="Track" unique_id=2073540714 instance=ExtResource("2_170dk")]
 transform = Transform3D(-1, 0, 8.742278e-08, 0, 1, 0, -8.742278e-08, 0, -1, 0, 13.1584, -40.070076)
 
-[node name="Ring2" parent="Track" unique_id=353498744 instance=ExtResource("2_24d08")]
+[node name="Ring2" parent="Track" unique_id=353498744 instance=ExtResource("2_170dk")]
 transform = Transform3D(0.9817139, 0, -0.19036253, 0, 1, 0, 0.19036253, 0, 0.9817139, 12.228359, 18.21275, -100.80272)
 
-[node name="Ring3" parent="Track" unique_id=2049613428 instance=ExtResource("2_24d08")]
+[node name="Ring3" parent="Track" unique_id=2049613428 instance=ExtResource("2_170dk")]
 transform = Transform3D(0.6751286, 0, -0.7377013, 0, 1, 0, 0.7377013, 0, 0.6751286, 48.939095, 25.105568, -159.95181)
 
-[node name="Ring4" parent="Track" unique_id=2032487712 instance=ExtResource("2_24d08")]
+[node name="Ring4" parent="Track" unique_id=2032487712 instance=ExtResource("2_170dk")]
 transform = Transform3D(0.08342462, 0, -0.9965158, 0, 1, 0, 0.9965158, 0, 0.08342462, 105.26711, 36.33178, -186.61977)
 
-[node name="Ring5" parent="Track" unique_id=1924800054 instance=ExtResource("2_24d08")]
+[node name="Ring5" parent="Track" unique_id=1924800054 instance=ExtResource("2_170dk")]
 transform = Transform3D(-0.27887976, 0, -0.96032995, 0, 1, 0, 0.96032995, 0, -0.27887976, 170.77156, 54.34266, -176.31013)
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1715913683]

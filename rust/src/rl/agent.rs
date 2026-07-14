@@ -10,10 +10,10 @@ use crate::{
     rl::{
         DEVICE,
         action::{PerformActionConfig, get_noise, perform_action},
-        adhdp::{ADHDP, ADHDPStepTrainData, ADHDPTrainData},
+        adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTrainData},
         episode::Episode,
-        reward::{fwd_stability_reward_field, reward_function_from_field},
-        state::{AgentStateVector, StateNormalizationConfig, get_agent_state, normalize_state},
+        reward::track_progress_reward_function,
+        state::{StateNormalizationConfig, get_agent_state, normalize_state},
     },
 };
 
@@ -21,7 +21,6 @@ use crate::{
 type Backend = Autodiff<Flex>;
 
 struct StepData {
-    state: AgentStateVector,
     x: Tensor<Backend, 2>,
     u: Tensor<Backend, 2>,
 }
@@ -38,15 +37,19 @@ pub struct Agent {
     /// Number of episodes.
     episode_count: usize,
     /// ADHDP
-    adhdp: ADHDP,
+    adhdp: Option<ADHDP>,
     /// Episode statistics.
     episode: Episode,
+    /// Previous episode data.
+    previous_episode: Option<Episode>,
     /// Previous step data.
     previous_step: Option<StepData>,
     /// Specific subdirectory for this run.
     run_directory: String,
     /// Noise source generator
     noise_source: Option<source::Default>,
+    /// Current noise level
+    noise_level: f32,
 
     /* Exported to the inspector */
     #[export]
@@ -77,17 +80,10 @@ pub struct Agent {
     #[export]
     /// Maximum duration of each episode in seconds.
     max_episode_time: f32,
-
-    #[export_subgroup(name = "Rewards")]
     #[export]
-    /// Reward for passing a ring.
-    reward_per_ring: f32,
+    critic_hidden_layers: Array<i64>,
     #[export]
-    /// Reward for progressing along the track.
-    reward_per_progress: f32,
-    #[export]
-    /// Penalty for crashing the helicopter (flying in an invalid state).
-    penalty_per_crash: f32,
+    actor_hidden_layers: Array<i64>,
 
     #[export_subgroup(name = "Learning Rates")]
     #[export]
@@ -104,11 +100,19 @@ pub struct Agent {
     /// Whether to use noise.
     use_noise: bool,
     #[export]
-    /// How many episodes to decrease noise in.
-    noise_episodes_decay: i64,
-    #[export]
     /// Seed for the noise generator.
     noise_seed: i64,
+    #[export]
+    /// Change between episodes reward lower which the noise is increased.
+    noise_update_threshold: f32,
+
+    #[export_subgroup(name = "Target Networks")]
+    #[export]
+    /// Whether to use target networks for the actor and critic models.
+    use_target_networks: bool,
+    #[export(range = (0.0, 1.0, 0.001))]
+    /// Polyak averaging coefficient for target networks.
+    tau: f32,
 
     #[export_subgroup(name = "State Normalization")]
     #[export]
@@ -152,11 +156,13 @@ impl INode3D for Agent {
             /* Internal states */
             total_training_time: 0.0,
             episode_count: 0,
-            adhdp: ADHDP::new(),
+            adhdp: None,
             episode: Episode::new(),
+            previous_episode: None,
             previous_step: None,
             run_directory: "".into(),
             noise_source: None,
+            noise_level: 0.0,
             noise_seed: 1,
 
             /* Exported to the inspector */
@@ -169,16 +175,17 @@ impl INode3D for Agent {
             train_every_n_frames: 1,
             gamma: 0.95,
             max_episode_time: 10.0,
-
-            reward_per_ring: 10.0,
-            reward_per_progress: 3.0,
-            penalty_per_crash: -10.0,
+            critic_hidden_layers: Array::new(),
+            actor_hidden_layers: Array::new(),
 
             critic_learning_rate: 1e-3,
             actor_learning_rate: 1e-4,
 
             use_noise: true,
-            noise_episodes_decay: 500,
+            noise_update_threshold: 0.05,
+
+            use_target_networks: true,
+            tau: 0.005,
 
             linear_velocity_scale: 1.0 / 50.0,
             angular_velocity_scale: 2.0,
@@ -202,17 +209,35 @@ impl INode3D for Agent {
         }
 
         // Set ADHDP properties
-        self.adhdp.config.gamma = self.gamma;
-        self.adhdp.config.actor_learning_rate = self.actor_learning_rate;
-        self.adhdp.config.critic_learning_rate = self.critic_learning_rate;
+        let mut adhdp = ADHDP::new(ADHDPConfig {
+            gamma: self.gamma,
+            actor_learning_rate: self.actor_learning_rate,
+            critic_learning_rate: self.critic_learning_rate,
+            use_target_networks: self.use_target_networks,
+            tau: self.tau,
+            actor_hidden_layers: self
+                .actor_hidden_layers
+                .to_packed_array()
+                .to_vec()
+                .iter()
+                .map(|x| *x as usize)
+                .collect(),
+            critic_hidden_layers: self
+                .critic_hidden_layers
+                .to_packed_array()
+                .to_vec()
+                .iter()
+                .map(|x| *x as usize)
+                .collect(),
+        });
 
         // Load models if specified
         if !self.saved_actor_model.is_empty() {
-            self.adhdp.load_actor(&self.saved_actor_model.to_string());
+            adhdp.load_actor(&self.saved_actor_model.to_string());
         }
 
         if !self.saved_critic_model.is_empty() {
-            self.adhdp.load_critic(&self.saved_critic_model.to_string());
+            adhdp.load_critic(&self.saved_critic_model.to_string());
         }
 
         // Determine run output directory
@@ -233,12 +258,16 @@ impl INode3D for Agent {
 
         // Generate noise source
         self.noise_source = Some(source::default(self.noise_seed as u64));
+
+        self.adhdp = Some(adhdp);
     }
 
     fn physics_process(&mut self, delta: f32) {
         self.total_training_time += delta;
         self.episode.time += delta;
         self.episode.steps += 1;
+
+        let adhdp = self.adhdp.as_mut().unwrap();
 
         if self.episode.time > self.max_episode_time {
             self.episode.log(&self.run_directory);
@@ -270,12 +299,11 @@ impl INode3D for Agent {
         let x = normalize_state(&state, &normalization_config);
 
         if let Some(prev_step) = self.previous_step.as_ref() {
-            let reward_function = reward_function_from_field(fwd_stability_reward_field);
-            let reward_value = reward_function(&prev_step.state, &state);
+            let reward_value = track_progress_reward_function(&state);
             let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
 
             if self.episode.steps % (self.train_every_n_frames as usize) == 0 {
-                let losses = self.adhdp.train(ADHDPTrainData::Step(ADHDPStepTrainData {
+                let losses = adhdp.train(ADHDPTrainData::Step(ADHDPStepTrainData {
                     x: prev_step.x.clone(),
                     u: prev_step.u.clone(),
                     reward,
@@ -290,23 +318,22 @@ impl INode3D for Agent {
             self.episode.accumulated_reward += reward_value;
         }
 
-        let mut u = self.adhdp.act(x.clone());
+        let mut u = adhdp.act(x.clone());
         // Add noise to the action if enabled
-        if self.use_noise && self.episode_count < self.noise_episodes_decay as usize {
-            self.episode.noise = (-((128.0 as f32).log(std::f32::consts::E)
-                * self.episode_count as f32
-                / self.noise_episodes_decay as f32))
-                .exp();
+        if self.use_noise {
+            self.episode.noise = self.noise_level;
 
-            if let Some(noise_source) = self.noise_source.as_mut() {
+            if let Some(noise_source) = self.noise_source.as_mut()
+                && self.episode.noise > 0.0
+            {
                 let noise = get_noise(self.episode.noise, noise_source);
                 u = u + noise;
             }
         }
-
+        let u = u.clamp(-1.0, 1.0);
         perform_action(u.clone(), helicopter, &action_config);
 
-        self.previous_step = Some(StepData { state, x, u });
+        self.previous_step = Some(StepData { x, u });
     }
 }
 
@@ -315,15 +342,28 @@ impl Agent {
     /// Reset the episode.
     #[func]
     fn reset_episode(&mut self) {
+        let adhdp = self.adhdp.as_mut().unwrap();
         let mut game = self.game.clone().unwrap();
         game.bind_mut().reset();
 
         self.episode_count += 1;
         if self.episode_count % 100 == 0 {
-            self.adhdp
-                .save(&self.run_directory, &self.episode_count.to_string());
+            adhdp.save(&self.run_directory, &self.episode_count.to_string());
         }
 
+        // Update the noise level based on the previous episode's reward
+        if let Some(prev_episode) = self.previous_episode.as_ref() {
+            let current_acc_reward = self.episode.accumulated_reward;
+            let prev_acc_reward = prev_episode.accumulated_reward;
+            let reward_diff = (current_acc_reward - prev_acc_reward).abs();
+            if reward_diff < self.noise_update_threshold {
+                self.noise_level = (self.noise_level + 0.01).min(1.0);
+            } else {
+                self.noise_level = (self.noise_level - 0.01).max(0.0);
+            }
+        }
+
+        self.previous_episode = Some(self.episode.clone());
         self.episode = Episode::new();
         self.previous_step = None;
     }

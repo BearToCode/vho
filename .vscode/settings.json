@@ -2,6 +2,7 @@
   "python-envs.defaultEnvManager": "ms-python.python:conda",
   "python-envs.defaultPackageManager": "ms-python.python:conda",
   "cSpell.words": [
+    "ADHDP",
     "Autodiff",
     "Autostabiliser",
     "Budiyono",
@@ -14,5 +15,5 @@
     "Thanapalan",
     "Wgpu"
   ],
-  "godotTools.editorPath.godot4": "q:\\Program Files\\Godot\\Godot_v4.7-stable_win64.exe"
+  "godotTools.editorPath.godot4": "/home/davide/.var/app/io.github.MakovWait.Godots/data/godot/app_userdata/Godots/versions/Godot_v4_7-stable_linux_x86_64/Godot_v4.7-stable_linux.x86_64"
 }

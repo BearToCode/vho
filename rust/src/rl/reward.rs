@@ -1,21 +1,32 @@
+use nalgebra::Vector3;
+
 use crate::rl::state::{AgentStateComponent, AgentStateVector};
 
-pub type RewardFunction = Box<dyn Fn(&AgentStateVector, &AgentStateVector) -> f32>;
-pub type FieldRewardFunction = fn(x: &AgentStateVector) -> f32;
+#[allow(dead_code)]
+pub fn stability_reward_function(state: &AgentStateVector) -> f32 {
+    let roll = state[AgentStateComponent::RotationAngleX];
+    let pitch = state[AgentStateComponent::RotationAngleZ];
 
-pub fn reward_function_from_field(field_fn: FieldRewardFunction) -> RewardFunction {
-    Box::new(move |x: &AgentStateVector, x_next: &AgentStateVector| field_fn(x_next) - field_fn(x))
+    let w_roll = 1.0;
+    let w_pitch = 1.0;
+
+    -(w_roll * roll.powi(2) + w_pitch * pitch.powi(2))
 }
 
 #[allow(dead_code)]
-pub fn fwd_stability_reward_field(x: &AgentStateVector) -> f32 {
-    -x[AgentStateComponent::ForwardVelocity].powf(2.0)
-}
+pub fn track_progress_reward_function(state: &AgentStateVector) -> f32 {
+    let velocity = Vector3::new(
+        state[AgentStateComponent::LinearVelocityX],
+        state[AgentStateComponent::LinearVelocityY],
+        state[AgentStateComponent::LinearVelocityZ],
+    );
+    let ring_direction = Vector3::new(
+        state[AgentStateComponent::RingDirectionX],
+        state[AgentStateComponent::RingDirectionY],
+        state[AgentStateComponent::RingDirectionZ],
+    );
 
-#[allow(dead_code)]
-pub fn stability_reward_field(x: &AgentStateVector) -> f32 {
-    (-x[AgentStateComponent::ForwardVelocity].powf(2.0)
-        - x[AgentStateComponent::LateralVelocity].powf(2.0)
-        - x[AgentStateComponent::VerticalVelocity].powf(2.0))
-        / 10.0
+    let reward = velocity.dot(&ring_direction);
+
+    return reward;
 }

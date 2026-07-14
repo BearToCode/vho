@@ -9,14 +9,10 @@ pub struct Episode {
     pub steps: usize,
     /// Noise factor for this episode, in [0, 1].
     pub noise: f32,
-
-    /// Progression along the track.
-    pub track_progress: f32,
-    /// Number of rings passed.
-    pub rings_passed: usize,
+    /// Action scale factor for this episode, in [0, 1].
+    pub action_scale: f32,
     /// Accumulated reward this episode.
     pub accumulated_reward: f32,
-
     /// Sum of critic losses this episode (for averaging).
     pub critic_loss_sum: f32,
     /// Sum of actor losses this episode (for averaging).
@@ -31,8 +27,7 @@ impl Episode {
             time: 0.0,
             steps: 0,
             noise: 0.0,
-            track_progress: 0.0,
-            rings_passed: 0,
+            action_scale: 1.0,
             accumulated_reward: 0.0,
             critic_loss_sum: 0.0,
             actor_loss_sum: 0.0,
@@ -62,7 +57,7 @@ impl Episode {
         };
 
         if !file_exists {
-            let header = "episode_time,steps,noise,track_progress,rings_passed,episode_reward,avg_critic_loss,avg_actor_loss\n";
+            let header = "episode_time,steps,noise,action_scale,episode_reward,avg_critic_loss,avg_actor_loss\n";
             if let Err(e) = file.write_all(header.as_bytes()) {
                 godot_error!("Failed to write CSV header: {e}");
                 return;
@@ -81,12 +76,11 @@ impl Episode {
         };
 
         let row = format!(
-            "{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{}\n",
             self.time,
             self.steps,
             self.noise,
-            self.track_progress,
-            self.rings_passed,
+            self.action_scale,
             self.accumulated_reward,
             avg_critic_loss,
             avg_actor_loss,
@@ -113,15 +107,14 @@ impl Display for Episode {
 
         write!(
             f,
-            "t: {:.2} \t| pgr: {:.2} \t| rings: {} \t| rwd: {:.2} \t| critic_loss: {:.2} \t| \
-             actor_loss: {:.2} | noise: {:.2}",
+            "t: {:.2} \t| rwd: {:.2} \t| critic_loss: {:.2} \t| \
+             actor_loss: {:.2} \t| noise: {:.2} \t| action_scale: {:.2}",
             self.time,
-            self.track_progress,
-            self.rings_passed,
             self.accumulated_reward,
             avg_critic_loss,
             avg_actor_loss,
-            self.noise
+            self.noise,
+            self.action_scale
         )
     }
 }

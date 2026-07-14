@@ -20,6 +20,14 @@ pub struct ADHDPConfig {
     pub critic_learning_rate: f64,
     /// Actor model learning rate.
     pub actor_learning_rate: f64,
+    /// Target network update rate.
+    pub tau: f32,
+    /// Whether to use target networks for the actor and critic models.
+    pub use_target_networks: bool,
+    /// Hidden layer sizes for the actor model.
+    pub actor_hidden_layers: Vec<usize>,
+    /// Hidden layer sizes for the critic model.
+    pub critic_hidden_layers: Vec<usize>,
 }
 
 /// Losses from one ADHDP train step.
@@ -41,8 +49,11 @@ pub struct ADHDPStepTrainData {
     pub x_next: Tensor<Backend, 2>,
 }
 
+#[allow(dead_code)]
 pub enum ADHDPTrainData {
+    #[allow(dead_code)]
     Step(ADHDPStepTrainData),
+    #[allow(dead_code)]
     Terminal(ADHDPTerminalTrainData),
 }
 
@@ -52,6 +63,10 @@ pub struct ADHDP {
     actor: ActorModel<Backend>,
     /// The online critic model.
     critic: CriticModel<Backend>,
+    /// The target actor model, used for stabilizing training.
+    target_actor: ActorModel<Backend>,
+    /// The target critic model, used for stabilizing training.
+    target_critic: CriticModel<Backend>,
 
     /// Adam optimizer for the actor model.
     actor_optimizer: OptimizerAdaptor<Adam, ActorModel<Backend>, Backend>,
@@ -63,9 +78,18 @@ pub struct ADHDP {
 }
 
 impl ADHDP {
-    pub fn new() -> Self {
-        let actor = ActorModel::<Backend>::new(STATE_DIM, ACTION_DIM, &DEVICE);
-        let critic = CriticModel::<Backend>::new(STATE_DIM, ACTION_DIM, &DEVICE);
+    pub fn new(config: ADHDPConfig) -> Self {
+        let actor =
+            ActorModel::<Backend>::new(STATE_DIM, ACTION_DIM, &config.actor_hidden_layers, &DEVICE);
+        let critic = CriticModel::<Backend>::new(
+            STATE_DIM,
+            ACTION_DIM,
+            &config.critic_hidden_layers,
+            &DEVICE,
+        );
+
+        let target_actor = actor.clone();
+        let target_critic = critic.clone();
 
         let actor_optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
@@ -76,28 +100,35 @@ impl ADHDP {
             .build()
             .into();
 
-        let default_config = ADHDPConfig {
-            actor_learning_rate: 1e-4,
-            critic_learning_rate: 1e-3,
-            gamma: 0.95,
-        };
-
         return Self {
             actor,
             critic,
+            target_actor,
+            target_critic,
             actor_optimizer,
             critic_optimizer,
-            config: default_config,
+            config,
         };
     }
 
     /// Train the models, returning their losses for the provided data.
     pub fn train(&mut self, data: ADHDPTrainData) -> ADHDPLosses {
         // 1. critic update
+        let critic_update_actor = if self.config.use_target_networks {
+            &self.target_actor
+        } else {
+            &self.actor
+        };
+        let critic_update_critic = if self.config.use_target_networks {
+            &self.target_critic
+        } else {
+            &self.critic
+        };
+
         let (x, u, target) = match data {
             ADHDPTrainData::Step(step) => {
-                let u_next = self.actor.forward(step.x_next.clone()).detach();
-                let j_next = self.critic.forward(step.x_next, u_next).detach();
+                let u_next = critic_update_actor.forward(step.x_next.clone()).detach();
+                let j_next = critic_update_critic.forward(step.x_next, u_next).detach();
                 let target = step.reward + j_next.mul_scalar(self.config.gamma);
 
                 (step.x, step.u, target)
@@ -141,6 +172,14 @@ impl ADHDP {
         self.actor =
             self.actor_optimizer
                 .step(self.config.actor_learning_rate, self.actor.clone(), grads);
+
+        // 3. Polyak averaging of target networks
+        if self.config.use_target_networks {
+            self.target_actor
+                .polyak_update(&self.actor, self.config.tau);
+            self.target_critic
+                .polyak_update(&self.critic, self.config.tau);
+        }
 
         return ADHDPLosses {
             actor_loss: actor_loss_value,

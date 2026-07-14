@@ -37,13 +37,10 @@ pub fn perform_action(
     }
 
     let mut helicopter_bind = helicopter.bind_mut();
-    helicopter_bind.collective = config.collective_range * control_normalized[0].clamp(-1.0, 1.0);
-    helicopter_bind.lateral_cyclic =
-        config.lateral_cyclic_range * control_normalized[1].clamp(-1.0, 1.0);
-    helicopter_bind.longitudinal_cyclic =
-        config.longitudinal_cyclic_range * control_normalized[2].clamp(-1.0, 1.0);
-    helicopter_bind.tail_rotor_cyclic =
-        config.tail_rotor_cyclic_range * control_normalized[3].clamp(-1.0, 1.0);
+    helicopter_bind.collective = config.collective_range * control_normalized[0];
+    helicopter_bind.lateral_cyclic = config.lateral_cyclic_range * control_normalized[1];
+    helicopter_bind.longitudinal_cyclic = config.longitudinal_cyclic_range * control_normalized[2];
+    helicopter_bind.tail_rotor_cyclic = config.tail_rotor_cyclic_range * control_normalized[3];
 }
 
 pub fn get_noise<S: Source>(noise_std: f32, source: &mut S) -> Tensor<Backend, 2> {

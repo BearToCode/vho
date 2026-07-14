@@ -1,69 +1,119 @@
 use burn::module::Param;
-use burn::nn::{Linear, LinearConfig, Relu, Tanh};
+use burn::nn::{Gelu, Initializer, Linear, LinearConfig};
 use burn::prelude::*;
 
 #[derive(Module, Debug)]
 pub struct CriticModel<B: Backend> {
-    l1: Linear<B>,
-    l2: Linear<B>,
-    relu: Relu,
+    layers: Vec<Linear<B>>,
+    activation: Gelu,
 }
 
 impl<B: Backend> CriticModel<B> {
-    pub fn new(state_dim: usize, action_dim: usize, device: &B::Device) -> Self {
+    pub fn new(
+        state_dim: usize,
+        action_dim: usize,
+        hidden_layers: &Vec<usize>,
+        device: &B::Device,
+    ) -> Self {
+        let mut layers = Vec::new();
+        let mut prev_dim = state_dim + action_dim;
+
+        for dim in hidden_layers {
+            layers.push(
+                LinearConfig::new(prev_dim, *dim)
+                    // Xavier/Glorot is the standard pairing for tanh/GELU-family
+                    // activations; He/Kaiming (burn's default) assumes ReLU.
+                    .with_initializer(Initializer::XavierUniform { gain: 1.0 })
+                    .init(device),
+            );
+            prev_dim = *dim;
+        }
+
+        // Output layer: linear, no activation, Q can be any real value.
+        // Small init gain here keeps early Q-values near 0 rather than
+        // starting with a large-magnitude, arbitrary bias.
+        layers.push(
+            LinearConfig::new(prev_dim, 1)
+                .with_initializer(Initializer::XavierUniform { gain: 0.1 })
+                .init(device),
+        );
+
         Self {
-            l1: LinearConfig::new(state_dim + action_dim, 32).init(device),
-            l2: LinearConfig::new(32, 1).init(device),
-            relu: Relu::new(),
+            layers,
+            activation: Gelu::new(),
         }
     }
 
-    /// Propagates the model.
     pub fn forward(&self, state: Tensor<B, 2>, action: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = Tensor::cat(vec![state, action], 1);
-        let x = self.relu.forward(self.l1.forward(x));
-        self.l2.forward(x) // scalar J
+        let mut x = Tensor::cat(vec![state, action], 1);
+        for layer in &self.layers[..self.layers.len() - 1] {
+            x = self.activation.forward(layer.forward(x));
+        }
+        self.layers.last().unwrap().forward(x)
     }
 
-    /// Performs a Polyak update of the model, with respect to an online model.
     #[allow(dead_code)]
     pub fn polyak_update(&mut self, online: &Self, tau: f32) {
-        self.l1 = polyak_linear(&self.l1, &online.l1, tau);
-        self.l2 = polyak_linear(&self.l2, &online.l2, tau);
+        for (target_layer, online_layer) in self.layers.iter_mut().zip(online.layers.iter()) {
+            *target_layer = polyak_linear(target_layer, online_layer, tau);
+        }
     }
 }
+use burn::nn::Tanh;
 
 #[derive(Module, Debug)]
 pub struct ActorModel<B: Backend> {
-    l1: Linear<B>,
-    l2: Linear<B>,
-    l3: Linear<B>,
-    relu: Relu,
-    tanh: Tanh,
+    layers: Vec<Linear<B>>,
+    activation: Gelu,
+    output_activation: Tanh,
 }
 
 impl<B: Backend> ActorModel<B> {
-    pub fn new(state_dim: usize, action_dim: usize, device: &B::Device) -> Self {
+    pub fn new(
+        state_dim: usize,
+        action_dim: usize,
+        hidden_layers: &Vec<usize>,
+        device: &B::Device,
+    ) -> Self {
+        let mut layers = Vec::new();
+        let mut prev_dim = state_dim;
+
+        for dim in hidden_layers {
+            layers.push(
+                LinearConfig::new(prev_dim, *dim)
+                    .with_initializer(Initializer::Zeros)
+                    .init(device),
+            );
+            prev_dim = *dim;
+        }
+
+        layers.push(
+            LinearConfig::new(prev_dim, action_dim)
+                .with_initializer(Initializer::Zeros)
+                .init(device),
+        );
+
         Self {
-            l1: LinearConfig::new(state_dim, 16).init(device),
-            l2: LinearConfig::new(16, 4).init(device),
-            l3: LinearConfig::new(4, action_dim).init(device),
-            relu: Relu::new(),
-            tanh: Tanh::new(),
+            layers,
+            activation: Gelu::new(),
+            output_activation: Tanh::new(),
         }
     }
 
-    /// Propagates the model.
     pub fn forward(&self, state: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = self.relu.forward(self.l1.forward(state));
-        self.tanh.forward(self.l2.forward(x)) // in [-1, 1]
+        let mut x = state;
+        for layer in &self.layers[..self.layers.len() - 1] {
+            x = self.activation.forward(layer.forward(x));
+        }
+        let raw = self.layers.last().unwrap().forward(x);
+        self.output_activation.forward(raw)
     }
 
-    /// Performs a Polyak update of the model, with respect to an online model.
     #[allow(dead_code)]
     pub fn polyak_update(&mut self, online: &Self, tau: f32) {
-        self.l1 = polyak_linear(&self.l1, &online.l1, tau);
-        self.l2 = polyak_linear(&self.l2, &online.l2, tau);
+        for (target_layer, online_layer) in self.layers.iter_mut().zip(online.layers.iter()) {
+            *target_layer = polyak_linear(target_layer, online_layer, tau);
+        }
     }
 }
 
