@@ -1,146 +1,63 @@
-use std::ops::{Index, IndexMut};
-
-use godot::classes::{IRigidBody3D, MeshInstance3D, PhysicsDirectBodyState3D, RigidBody3D};
+use godot::classes::{IRigidBody3D, MeshInstance3D, RigidBody3D};
 use godot::prelude::*;
-
-use nalgebra::{SMatrix, SVector};
-
-type StateMatrix = SMatrix<f32, 8, 8>;
-type InputMatrix = SMatrix<f32, 8, 4>;
-type StateVector = SVector<f32, 8>;
-type InputVector = SVector<f32, 4>;
-
-/// Imperial state vector, used for linear dynamics.
-/// All velocities are in a body-fixed reference frame.
-pub enum HelicopterStateComponent {
-    /// [ft/s] forward velocity
-    U = 0,
-    // [ft/s]  vertical velocity
-    W,
-    // [rad/s] pitch rate
-    Q,
-    // [rad]   pitch angle
-    Theta,
-    // [ft/s]  lateral velocity
-    V,
-    // [rad/s] roll rate
-    P,
-    // [rad/s] yaw rate
-    R,
-    // [rad]   roll angle
-    Phi,
-}
-
-/// Helicopter control inputs.
-pub enum HelicopterInputComponent {
-    /// longitudinal cyclic
-    UY = 0,
-    /// collective
-    UC,
-    /// lateral cyclic
-    UX,
-    /// tail rotor cyclic
-    UZ,
-}
-
-impl Index<HelicopterStateComponent> for StateVector {
-    type Output = f32;
-    fn index(&self, index: HelicopterStateComponent) -> &Self::Output {
-        &self[index as usize]
-    }
-}
-
-impl IndexMut<HelicopterStateComponent> for StateVector {
-    fn index_mut(&mut self, index: HelicopterStateComponent) -> &mut Self::Output {
-        return &mut self[index as usize];
-    }
-}
-
-impl Index<HelicopterInputComponent> for InputVector {
-    type Output = f32;
-    fn index(&self, index: HelicopterInputComponent) -> &Self::Output {
-        &self[index as usize]
-    }
-}
-
-impl IndexMut<HelicopterInputComponent> for InputVector {
-    fn index_mut(&mut self, index: HelicopterInputComponent) -> &mut Self::Output {
-        return &mut self[index as usize];
-    }
-}
-
-struct HelicopterLinearModel {
-    a: StateMatrix,
-    b: InputMatrix,
-}
-
-impl HelicopterLinearModel {
-    #[rustfmt::skip]
-    pub fn new() -> Self {
-        const G: f32 = 32.174;        // Gravity in ft/s^2
-        const U0: f32 = 20.0 * 3.281; // 20 m/s
-
-        Self {
-            a: StateMatrix::from_row_slice(&[
-                //         |   u   |   w   |   q   | theta |   v   |   p   |   r   |  phi  |
-                /*   u   */  -0.01 ,  0.0  ,  0.0  ,   -G  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,
-                /*   w   */   0.0  , -1.0  ,   U0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,
-                /*   q   */   0.0  ,  0.0  , -3.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,
-                /* theta */   0.0  ,  0.0  ,  1.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,
-                /*   v   */   0.0  ,  0.0  ,  0.0  ,  0.0  , -0.02 ,  0.0  ,  -U0  ,    G  ,
-                /*   p   */   0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  , -5.0  ,  0.0  ,  0.0  ,
-                /*   r   */   0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  , -1.0  ,  0.0  ,
-                /*  phi  */   0.0  ,  0.0  ,  0.0  ,  0.0  ,  0.0  ,  1.0  ,  0.0  ,  0.0  ,
-            ]),
-            b: InputMatrix::from_row_slice(&[
-                //         |  u_y  |  u_c  |  u_x  |  u_z  |
-                /*   u   */   0.0  ,  0.0  ,  0.0  ,  0.0  ,
-                /*   w   */   0.0  , -7.0  ,  0.0  ,  0.0  ,
-                /*   q   */  -0.7  ,  0.0  ,  0.0  ,  0.0  ,
-                /* theta */   0.0  ,  0.0  ,  0.0  ,  0.0  ,
-                /*   v   */   0.0  ,  0.0  ,  0.0  ,  0.0  ,
-                /*   p   */   0.0  ,  0.0  ,  2.0  ,  0.0  ,
-                /*   r   */   0.0  ,  0.0  ,  0.0  , -3.0  ,
-                /*  phi  */   0.0  ,  0.0  ,  0.0  ,  0.0  ,
-            ]),
-        }
-    }
-}
-
-/// Convert fts to meters
-pub fn ft_to_m(value: f32) -> f32 {
-    value * 0.3048
-}
-
-/// Convert meters to fts
-pub fn m_to_ft(value: f32) -> f32 {
-    value / 0.3048
-}
 
 #[derive(GodotClass)]
 #[class(base=RigidBody3D)]
 pub struct Helicopter {
     base: Base<RigidBody3D>,
 
-    state_vector: StateVector,
-    inputs_vector: InputVector,
-
-    linear_model: HelicopterLinearModel,
+    // Flapping dynamics
+    lon_flapping: f32,
+    lat_flapping: f32,
 
     #[export_group(name = "Inputs")]
     #[export]
+    /// Collective input, range: [0.0, 1.0]
     pub collective: f32,
     #[export]
+    /// Lateral cyclic input, range: [-1.0, 1.0]
     pub lateral_cyclic: f32,
     #[export]
+    /// Longitudinal cyclic input, range: [-1.0, 1.0]
     pub longitudinal_cyclic: f32,
     #[export]
+    /// Tail rotor cyclic input, range: [-1.0, 1.0]
     pub tail_rotor_cyclic: f32,
+
+    #[export_group(name = "Parameters")]
+    #[export]
+    pub air_density: f32, // [kg/m^3]
+    #[export]
+    pub longitudinal_gain: f32, // [rad]
+    #[export]
+    pub lateral_gain: f32, // [rad]
+    #[export]
+    pub longitudinal_stiffness: f32, // [Nm/rad]
+    #[export]
+    pub lateral_stiffness: f32, // [Nm/rad]
+    #[export_subgroup(name = "Main Rotor")]
+    #[export]
+    pub main_rotor_radius: f32, // [m]
+    #[export]
+    pub main_rotor_speed: f32, // [rad/s]
+    #[export]
+    pub max_thrust: f32, // [N]
+    #[export]
+    pub torque_coefficient: f32, // [-]
+    #[export]
+    pub lock_number: f32, // [-]
+    #[export_subgroup(name = "Tail Rotor")]
+    #[export]
+    pub tail_rotor_max_thrust: f32, // [N]
+    #[export]
+    pub tail_rotor_arm: f32, // [m]
+
     #[export_group(name = "Meshes")]
     #[export]
     main_rotor_mesh: Option<Gd<MeshInstance3D>>,
     #[export]
     tail_rotor_mesh: Option<Gd<MeshInstance3D>>,
+
     #[export_group(name = "Extra")]
     #[export]
     animate: bool,
@@ -151,143 +68,105 @@ impl IRigidBody3D for Helicopter {
     fn init(base: Base<RigidBody3D>) -> Self {
         Self {
             base,
-            main_rotor_mesh: None,
-            tail_rotor_mesh: None,
+
+            lon_flapping: 0.0,
+            lat_flapping: 0.0,
+
             collective: 0.0,
             lateral_cyclic: 0.0,
             longitudinal_cyclic: 0.0,
             tail_rotor_cyclic: 0.0,
-            state_vector: StateVector::zeros(),
-            inputs_vector: InputVector::zeros(),
-            linear_model: HelicopterLinearModel::new(),
+
+            air_density: 1.225,
+            longitudinal_gain: 0.175,
+            lateral_gain: 0.175,
+            longitudinal_stiffness: 25_000.0,
+            lateral_stiffness: 25_000.0,
+            main_rotor_radius: 4.0,
+            main_rotor_speed: 50.0,
+            max_thrust: 18_700.0,
+            torque_coefficient: 0.00257,
+            lock_number: 6.0,
+            tail_rotor_max_thrust: 1_500.0,
+            tail_rotor_arm: 5.5,
+
+            main_rotor_mesh: None,
+            tail_rotor_mesh: None,
+
             animate: true,
         }
     }
 
     fn ready(&mut self) {}
 
-    fn integrate_forces(&mut self, state: Option<Gd<PhysicsDirectBodyState3D>>) {
-        if let Some(s) = state {
-            self.retrieve_state(s.clone());
-            self.retrieve_inputs();
+    fn physics_process(&mut self, delta: f32) {
+        // Retrieve state from the physics engine
+        let local_to_global = self.base().get_transform().basis;
+        let global_to_local = local_to_global.inverse();
+        let linear_velocity = global_to_local * self.base().get_linear_velocity();
+        let angular_velocity = global_to_local * self.base().get_angular_velocity();
 
-            let state_vector_derivative: StateVector =
-                self.linear_model.a * self.state_vector + self.linear_model.b * self.inputs_vector;
+        // We need to convert from Godot's coordinate system to the helicopter's coordinate system
+        let (_u, _v, _w) = (linear_velocity.x, -linear_velocity.z, -linear_velocity.y);
+        let (p, q, _r) = (angular_velocity.x, -angular_velocity.z, -angular_velocity.y);
 
-            self.apply_accelerations(s.clone(), state_vector_derivative);
+        // Advance flapping dynamics
+        let flap_time_const = 16.0 / (self.lock_number * self.main_rotor_speed);
+        let lon_flapping_dot = (-self.lon_flapping - flap_time_const * q
+            + self.longitudinal_gain * self.longitudinal_cyclic)
+            / flap_time_const;
+        let lat_flapping_dot = (-self.lat_flapping - flap_time_const * p
+            + self.lateral_gain * self.lateral_cyclic)
+            / flap_time_const;
+        // Simple Euler integration for flapping dynamics
+        self.lon_flapping += lon_flapping_dot * delta;
+        self.lat_flapping += lat_flapping_dot * delta;
 
-            if self.animate {
-                let delta = s.get_step();
-                self.animate_main_rotor_rotation(delta);
-                self.animate_tail_rotor_rotation(delta);
-            }
+        // Calculate forces and torques
+        let thrust = self.max_thrust * self.collective;
+        let reaction_torque = self.torque_coefficient * thrust.powf(1.5);
+        let tail_rotor_thrust = self.tail_rotor_max_thrust * self.tail_rotor_cyclic;
+
+        let f_x = -thrust * self.lon_flapping;
+        let f_y = thrust * self.lat_flapping + tail_rotor_thrust;
+        let f_z = -thrust;
+
+        let m_x = self.lateral_stiffness * self.lat_flapping;
+        let m_y = self.longitudinal_stiffness * self.lon_flapping;
+        let m_z = -reaction_torque + self.tail_rotor_arm * tail_rotor_thrust;
+
+        let local_force = Vector3::new(f_x, -f_z, -f_y);
+        let local_torque = Vector3::new(m_x, -m_z, -m_y);
+
+        self.base_mut()
+            .apply_central_force(local_to_global * local_force);
+        self.base_mut().apply_torque(local_to_global * local_torque);
+
+        // Animate the rotors if enabled
+        if self.animate {
+            self.animate_main_rotor_rotation(delta);
+            self.animate_tail_rotor_rotation(delta);
         }
     }
 }
 
 #[godot_api]
 impl Helicopter {
-    pub fn get_state_vector(&self) -> &StateVector {
-        return &self.state_vector;
-    }
-
-    fn retrieve_state(&mut self, state: Gd<PhysicsDirectBodyState3D>) {
-        let transform = state.get_transform();
-        let global_to_local = transform.basis.inverse();
-
-        let local_linear_velocity = global_to_local * state.get_linear_velocity();
-        let local_angular_velocity = global_to_local * state.get_angular_velocity();
-
-        let rotation = transform.basis.get_euler();
-
-        //  | Local Reference Frame | Godot | Model |
-        //  | --------------------- | ----- | ----- |
-        //  | Forward:              | -z    |   U/P |
-        //  | Right:                | +x    |   W/Q |
-        //  | Up:                   | +y    |  -V/R |
-
-        type SV = HelicopterStateComponent;
-        self.state_vector[SV::U] = m_to_ft(-local_linear_velocity.z);
-        self.state_vector[SV::V] = m_to_ft(local_linear_velocity.x);
-        self.state_vector[SV::W] = m_to_ft(-local_linear_velocity.y);
-
-        self.state_vector[SV::Phi] = -rotation.z;
-        self.state_vector[SV::Theta] = rotation.x;
-
-        self.state_vector[SV::P] = -local_angular_velocity.z;
-        self.state_vector[SV::Q] = local_angular_velocity.x;
-        self.state_vector[SV::R] = -local_angular_velocity.y;
-    }
-
-    fn apply_accelerations(
-        &mut self,
-        state: Gd<PhysicsDirectBodyState3D>,
-        state_vector_derivative: StateVector,
-    ) {
-        let transform = state.get_transform();
-        let local_to_global = transform.basis;
-
-        //  | Local Reference Frame | Godot | Model |
-        //  | --------------------- | ----- | ----- |
-        //  | Forward:              | -z    |   U/P |
-        //  | Right:                | +x    |   W/Q |
-        //  | Up:                   | +y    |   V/R |
-
-        type SV = HelicopterStateComponent;
-        let local_linear_acceleration = Vector3::new(
-            ft_to_m(state_vector_derivative[SV::V]),
-            ft_to_m(-state_vector_derivative[SV::W]),
-            ft_to_m(-state_vector_derivative[SV::U]),
-        );
-
-        let local_angular_acceleration = Vector3::new(
-            state_vector_derivative[SV::Q],
-            -state_vector_derivative[SV::R],
-            -state_vector_derivative[SV::P],
-        );
-
-        let mut base = self.base_mut();
-        let mass = base.get_mass();
-        let inertia = base.get_inertia();
-
-        let local_force = local_linear_acceleration * mass;
-        let local_torque = local_angular_acceleration * inertia;
-
-        let global_force = local_to_global * local_force;
-        let global_torque = local_to_global * local_torque;
-
-        // godot_print!("global force: {global_force}");
-        // godot_print!("global torque: {global_torque}");
-
-        base.apply_force(global_force);
-        base.apply_torque(global_torque);
-    }
-
-    #[func]
-    fn retrieve_inputs(&mut self) {
-        type Inputs = HelicopterInputComponent;
-        self.inputs_vector[Inputs::UX] = self.lateral_cyclic;
-        self.inputs_vector[Inputs::UC] = self.collective;
-        self.inputs_vector[Inputs::UY] = self.longitudinal_cyclic;
-        self.inputs_vector[Inputs::UZ] = self.tail_rotor_cyclic;
-    }
-
     #[func]
     fn animate_main_rotor_rotation(&mut self, delta: f32) {
-        const OMEGA: f32 = 10.0;
         if let Some(main_rotor_mesh) = &mut self.main_rotor_mesh {
             let mut rotation = main_rotor_mesh.get_rotation();
-            rotation.y += OMEGA * delta;
+            rotation.y += self.main_rotor_speed * delta;
             main_rotor_mesh.set_rotation(rotation);
         }
     }
 
     #[func]
     fn animate_tail_rotor_rotation(&mut self, delta: f32) {
-        const OMEGA: f32 = 30.0;
         if let Some(tail_rotor_mesh) = &mut self.tail_rotor_mesh {
             let mut rotation = tail_rotor_mesh.get_rotation();
-            rotation.x += OMEGA * delta;
+            let tail_rotor_speed = self.main_rotor_speed * 6.0;
+            rotation.x += tail_rotor_speed * delta;
             tail_rotor_mesh.set_rotation(rotation);
         }
     }

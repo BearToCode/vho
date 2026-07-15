@@ -9,10 +9,10 @@ use crate::{
     game::Game,
     rl::{
         DEVICE,
-        action::{PerformActionConfig, get_noise, perform_action},
+        action::{get_noise, perform_action},
         adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTrainData},
         episode::Episode,
-        reward::track_progress_reward_function,
+        reward::stability_reward_function,
         state::{StateNormalizationConfig, get_agent_state, normalize_state},
     },
 };
@@ -127,24 +127,6 @@ pub struct Agent {
     #[export]
     /// Position scale for state normalization.
     position_scale: f32,
-
-    #[export_group(name = "Input Ranges")]
-    #[export]
-    #[var(hint = NONE)]
-    /// Range of allowed collective action values.
-    collective_range: f32,
-    #[export]
-    #[var(hint = NONE)]
-    /// Range of allowed lateral cyclic action values.
-    lateral_cyclic_range: f32,
-    #[export]
-    #[var(hint = NONE)]
-    /// Range of allowed longitudinal cyclic action values.
-    longitudinal_cyclic_range: f32,
-    #[export]
-    #[var(hint = NONE)]
-    /// Range of allowed tail rotor cyclic action values.
-    tail_rotor_cyclic_range: f32,
 }
 
 #[godot_api]
@@ -157,7 +139,7 @@ impl INode3D for Agent {
             total_training_time: 0.0,
             episode_count: 0,
             adhdp: None,
-            episode: Episode::new(),
+            episode: Episode::new(0),
             previous_episode: None,
             previous_step: None,
             run_directory: "".into(),
@@ -175,14 +157,14 @@ impl INode3D for Agent {
             train_every_n_frames: 1,
             gamma: 0.95,
             max_episode_time: 10.0,
-            critic_hidden_layers: Array::new(),
-            actor_hidden_layers: Array::new(),
+            critic_hidden_layers: Array::from_iter(vec![128, 128]),
+            actor_hidden_layers: Array::from_iter(vec![128, 128]),
 
             critic_learning_rate: 1e-3,
             actor_learning_rate: 1e-4,
 
             use_noise: true,
-            noise_update_threshold: 0.05,
+            noise_update_threshold: 100.0,
 
             use_target_networks: true,
             tau: 0.005,
@@ -191,11 +173,6 @@ impl INode3D for Agent {
             angular_velocity_scale: 2.0,
             angle_scale: 1.0,
             position_scale: 1.0 / 100.0,
-
-            collective_range: 5.0,
-            lateral_cyclic_range: 1.0,
-            longitudinal_cyclic_range: 1.0,
-            tail_rotor_cyclic_range: 0.3,
         }
     }
 
@@ -217,17 +194,13 @@ impl INode3D for Agent {
             tau: self.tau,
             actor_hidden_layers: self
                 .actor_hidden_layers
-                .to_packed_array()
-                .to_vec()
-                .iter()
-                .map(|x| *x as usize)
+                .iter_shared()
+                .map(|x| x as usize)
                 .collect(),
             critic_hidden_layers: self
                 .critic_hidden_layers
-                .to_packed_array()
-                .to_vec()
-                .iter()
-                .map(|x| *x as usize)
+                .iter_shared()
+                .map(|x| x as usize)
                 .collect(),
         });
 
@@ -288,18 +261,11 @@ impl INode3D for Agent {
             position_scale: self.position_scale,
         };
 
-        let action_config = PerformActionConfig {
-            collective_range: self.collective_range,
-            lateral_cyclic_range: self.lateral_cyclic_range,
-            longitudinal_cyclic_range: self.longitudinal_cyclic_range,
-            tail_rotor_cyclic_range: self.tail_rotor_cyclic_range,
-        };
-
         let state = get_agent_state(game.clone());
         let x = normalize_state(&state, &normalization_config);
 
         if let Some(prev_step) = self.previous_step.as_ref() {
-            let reward_value = track_progress_reward_function(&state);
+            let reward_value = stability_reward_function(&state);
             // godot_print!("Reward: {}", reward_value);
             let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
 
@@ -332,7 +298,7 @@ impl INode3D for Agent {
             }
         }
         let u = u.clamp(-1.0, 1.0);
-        perform_action(u.clone(), helicopter, &action_config);
+        perform_action(u.clone(), helicopter);
 
         self.previous_step = Some(StepData { x, u });
     }
@@ -365,7 +331,7 @@ impl Agent {
         }
 
         self.previous_episode = Some(self.episode.clone());
-        self.episode = Episode::new();
+        self.episode = Episode::new(self.episode_count);
         self.previous_step = None;
     }
 }

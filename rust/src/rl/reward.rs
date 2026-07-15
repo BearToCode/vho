@@ -1,43 +1,26 @@
-use nalgebra::Vector3;
-
 use crate::rl::state::{AgentStateComponent, AgentStateVector};
 
 #[allow(dead_code)]
 pub fn stability_reward_function(state: &AgentStateVector) -> f32 {
-    let roll = state[AgentStateComponent::RotationAngleX];
-    let pitch = state[AgentStateComponent::RotationAngleZ];
+    let v_x = state[AgentStateComponent::LinearVelocityX];
+    let v_y = state[AgentStateComponent::LinearVelocityY];
+    let v_z = state[AgentStateComponent::LinearVelocityZ];
 
-    let w_roll = 1.0;
-    let w_pitch = 1.0;
+    let w_x = state[AgentStateComponent::AngularVelocityX];
+    let w_y = state[AgentStateComponent::AngularVelocityY];
+    let w_z = state[AgentStateComponent::AngularVelocityZ];
 
-    -(w_roll * roll.powi(2) + w_pitch * pitch.powi(2))
-}
+    let weight_linear_velocity = 0.001;
+    let weight_angular_velocity = 1.0;
 
-#[allow(dead_code)]
-pub fn track_progress_reward_function(state: &AgentStateVector) -> f32 {
-    let velocity = Vector3::new(
-        state[AgentStateComponent::LinearVelocityX],
-        state[AgentStateComponent::LinearVelocityY],
-        state[AgentStateComponent::LinearVelocityZ],
-    );
-    let ring_direction = Vector3::new(
-        state[AgentStateComponent::RingDirectionX],
-        state[AgentStateComponent::RingDirectionY],
-        state[AgentStateComponent::RingDirectionZ],
-    );
+    let linear_velocity_penalty =
+        weight_linear_velocity * (v_x.powi(2) + v_y.powi(2) + v_z.powi(2)).sqrt();
+    let angular_velocity_penalty =
+        weight_angular_velocity * (w_x.powi(2) + w_y.powi(2) + w_z.powi(2)).sqrt();
 
-    let reward = velocity.dot(&ring_direction);
+    let total_penalty = linear_velocity_penalty + angular_velocity_penalty;
 
-    const MAX_TILT_RAD: f32 = 30.0 * std::f32::consts::PI / 180.0;
-    const TILT_PENALTY_WEIGHT: f32 = 1.0;
+    let reward = -total_penalty;
 
-    let roll = state[AgentStateComponent::RotationAngleX];
-    let pitch = state[AgentStateComponent::RotationAngleZ];
-
-    let roll_excess = (roll.abs() - MAX_TILT_RAD).max(0.0);
-    let pitch_excess = (pitch.abs() - MAX_TILT_RAD).max(0.0);
-
-    let tilt_penalty = TILT_PENALTY_WEIGHT * (roll_excess + pitch_excess);
-
-    return reward - tilt_penalty;
+    reward
 }

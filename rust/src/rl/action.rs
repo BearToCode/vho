@@ -10,19 +10,8 @@ use crate::{
 /// Dimension of the action output of the model.
 pub const ACTION_DIM: usize = 4;
 
-pub struct PerformActionConfig {
-    pub collective_range: f32,
-    pub lateral_cyclic_range: f32,
-    pub longitudinal_cyclic_range: f32,
-    pub tail_rotor_cyclic_range: f32,
-}
-
 /// Perform a certain action in the simulation.
-pub fn perform_action(
-    u: Tensor<Backend, 2>,
-    mut helicopter: Gd<Helicopter>,
-    config: &PerformActionConfig,
-) {
+pub fn perform_action(u: Tensor<Backend, 2>, mut helicopter: Gd<Helicopter>) {
     let control_normalized = u
         .into_data()
         .to_vec::<f32>()
@@ -37,10 +26,13 @@ pub fn perform_action(
     }
 
     let mut helicopter_bind = helicopter.bind_mut();
-    helicopter_bind.collective = config.collective_range * control_normalized[0];
-    helicopter_bind.lateral_cyclic = config.lateral_cyclic_range * control_normalized[1];
-    helicopter_bind.longitudinal_cyclic = config.longitudinal_cyclic_range * control_normalized[2];
-    helicopter_bind.tail_rotor_cyclic = config.tail_rotor_cyclic_range * control_normalized[3];
+    // Map the collective input from [-1, 1] of the model to [0, 1] for the helicopter
+    let collective = (control_normalized[0] + 1.0) / 2.0;
+
+    helicopter_bind.collective = collective;
+    helicopter_bind.lateral_cyclic = control_normalized[1];
+    helicopter_bind.longitudinal_cyclic = control_normalized[2];
+    helicopter_bind.tail_rotor_cyclic = control_normalized[3];
 }
 
 pub fn get_noise<S: Source>(noise_std: f32, source: &mut S) -> Tensor<Backend, 2> {

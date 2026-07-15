@@ -3,14 +3,13 @@ use std::fmt::Display;
 
 #[derive(Clone, Copy)]
 pub struct Episode {
+    pub index: usize,
     /// Elapsed time.
     pub time: f32,
     /// Number of steps elapsed.
     pub steps: usize,
     /// Noise factor for this episode, in [0, 1].
     pub noise: f32,
-    /// Action scale factor for this episode, in [0, 1].
-    pub action_scale: f32,
     /// Accumulated reward this episode.
     pub accumulated_reward: f32,
     /// Sum of critic losses this episode (for averaging).
@@ -22,12 +21,12 @@ pub struct Episode {
 }
 
 impl Episode {
-    pub fn new() -> Self {
+    pub fn new(index: usize) -> Self {
         Episode {
+            index,
             time: 0.0,
             steps: 0,
             noise: 0.0,
-            action_scale: 1.0,
             accumulated_reward: 0.0,
             critic_loss_sum: 0.0,
             actor_loss_sum: 0.0,
@@ -57,7 +56,7 @@ impl Episode {
         };
 
         if !file_exists {
-            let header = "episode_time,steps,noise,action_scale,episode_reward,avg_critic_loss,avg_actor_loss\n";
+            let header = "index,episode_time,steps,noise,action_scale,episode_reward,avg_critic_loss,avg_actor_loss\n";
             if let Err(e) = file.write_all(header.as_bytes()) {
                 godot_error!("Failed to write CSV header: {e}");
                 return;
@@ -77,10 +76,10 @@ impl Episode {
 
         let row = format!(
             "{},{},{},{},{},{},{}\n",
+            self.index,
             self.time,
             self.steps,
             self.noise,
-            self.action_scale,
             self.accumulated_reward,
             avg_critic_loss,
             avg_actor_loss,
@@ -107,14 +106,14 @@ impl Display for Episode {
 
         write!(
             f,
-            "t: {:.2} \t| rwd: {:.2} \t| critic_loss: {:.2} \t| \
-             actor_loss: {:.2} \t| noise: {:.2} \t| action_scale: {:.2}",
+            "idx: {} \t| t: {:.2} \t| rwd: {:.2} \t| critic_loss: {:.2} \t| \
+             actor_loss: {:.2} \t| noise: {:.2}",
+            self.index,
             self.time,
             self.accumulated_reward,
             avg_critic_loss,
             avg_actor_loss,
             self.noise,
-            self.action_scale
         )
     }
 }

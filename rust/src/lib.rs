@@ -2,9 +2,7 @@
 
 mod game;
 mod helicopter;
-mod ring;
 mod rl;
-mod track;
 
 use godot::prelude::*;
 

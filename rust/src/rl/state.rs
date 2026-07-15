@@ -1,7 +1,7 @@
 use std::ops::{Index, IndexMut};
 
 use burn::Tensor;
-use godot::{global::tanh, prelude::*};
+use godot::prelude::*;
 use nalgebra::SVector;
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Dimension of the state input of the model.
-pub const STATE_DIM: usize = 12;
+pub const STATE_DIM: usize = 8;
 
 pub type AgentStateVector = SVector<f32, STATE_DIM>;
 
@@ -33,14 +33,6 @@ pub enum AgentStateComponent {
     RotationAngleX,
     /// [rad/s] Helicopter pitch angle.
     RotationAngleZ,
-    /// [-]     Current ring direction x component.
-    RingDirectionX,
-    /// [-]     Current ring direction y component.
-    RingDirectionY,
-    /// [-]     Current ring direction z component.
-    RingDirectionZ,
-    /// [m]     Current ring distance along the specified direction.
-    RingDistance,
 }
 
 impl Index<AgentStateComponent> for AgentStateVector {
@@ -71,13 +63,9 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
 
     let helicopter = game_bind.helicopter.clone().unwrap();
 
-    let track = game_bind.track.clone().unwrap();
-    let current_ring = track.bind().current_ring().unwrap();
-
     // Helicopter transform data
     let global_to_local = helicopter.get_transform().basis.inverse();
 
-    let helicopter_position = helicopter.get_global_position();
     let helicopter_rotation = helicopter.get_rotation();
 
     let helicopter_linear_velocity = helicopter.get_linear_velocity();
@@ -86,21 +74,9 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     let helicopter_local_linear_velocity = global_to_local * helicopter_linear_velocity;
     let helicopter_local_angular_velocity = global_to_local * helicopter_angular_velocity;
 
-    // Ring transform data
-    let ring_position = current_ring.get_global_position();
-    let ring_local_relative_position = global_to_local * (ring_position - helicopter_position);
-    let ring_direction = ring_local_relative_position.normalized();
-
-    let ring_distance = ring_local_relative_position.length();
-
     // Copy data onto agent state vector
     type Agent = AgentStateComponent;
-    let mut agent_state: nalgebra::Matrix<
-        f32,
-        nalgebra::Const<12>,
-        nalgebra::Const<1>,
-        nalgebra::ArrayStorage<f32, 12, 1>,
-    > = AgentStateVector::zeros();
+    let mut agent_state = AgentStateVector::zeros();
     agent_state[Agent::LinearVelocityX] = helicopter_local_linear_velocity.x;
     agent_state[Agent::LinearVelocityY] = helicopter_local_linear_velocity.y;
     agent_state[Agent::LinearVelocityZ] = helicopter_local_linear_velocity.z;
@@ -109,10 +85,6 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     agent_state[Agent::AngularVelocityZ] = helicopter_local_angular_velocity.z;
     agent_state[Agent::RotationAngleX] = helicopter_rotation.x;
     agent_state[Agent::RotationAngleZ] = helicopter_rotation.z;
-    agent_state[Agent::RingDirectionX] = ring_direction.x;
-    agent_state[Agent::RingDirectionY] = ring_direction.y;
-    agent_state[Agent::RingDirectionZ] = ring_direction.z;
-    agent_state[Agent::RingDistance] = ring_distance;
 
     return agent_state;
 }
@@ -124,25 +96,16 @@ pub fn normalize_state(
 ) -> Tensor<Backend, 2> {
     type Agent = AgentStateComponent;
 
-    const Y_MULTIPLIER: f32 = 10.0;
-
-    let ring_distance_normalized =
-        tanh((agent_state[Agent::RingDistance] * config.position_scale) as f64) as f32;
-
     let normalized = Tensor::<Backend, 1>::from_data(
         [
             agent_state[Agent::LinearVelocityX] * config.linear_velocity_scale,
-            agent_state[Agent::LinearVelocityY] * config.linear_velocity_scale * Y_MULTIPLIER,
+            agent_state[Agent::LinearVelocityY] * config.linear_velocity_scale,
             agent_state[Agent::LinearVelocityZ] * config.linear_velocity_scale,
             agent_state[Agent::AngularVelocityX] * config.angular_velocity_scale,
             agent_state[Agent::AngularVelocityY] * config.angular_velocity_scale,
             agent_state[Agent::AngularVelocityZ] * config.angular_velocity_scale,
             agent_state[Agent::RotationAngleX] * config.angle_scale,
             agent_state[Agent::RotationAngleZ] * config.angle_scale,
-            agent_state[Agent::RingDirectionX],
-            agent_state[Agent::RingDirectionY] * Y_MULTIPLIER,
-            agent_state[Agent::RingDirectionZ],
-            ring_distance_normalized,
         ],
         &DEVICE,
     )
