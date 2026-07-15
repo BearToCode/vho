@@ -15,14 +15,16 @@ helicopter = NodePath("Helicopter")
 game = NodePath("..")
 output_directory = "/home/davide/University/tudelft/bio-inspired-intelligence-and-learning/vho/output"
 train_every_n_frames = 4
-gamma = 0.9
 max_episode_time = 15.0
-critic_hidden_layers = Array[int]([256, 256])
-actor_hidden_layers = Array[int]([256, 256])
+critic_hidden_layers = Array[int]([400, 400])
+actor_hidden_layers = Array[int]([400, 400])
 actor_learning_rate = 9.999999999999918e-06
 critic_learning_rate = 9.999999999999967e-05
 noise_update_threshold = 100.0
 use_target_networks = false
+angular_velocity_scale = 9.99999999999997
+linear_velocity_scale = 0.0999999999999997
+angle_scale = 9.99999999999997
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_24d08")]
 transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 2.7574224, 0)

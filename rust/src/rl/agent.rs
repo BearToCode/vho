@@ -300,6 +300,7 @@ impl INode3D for Agent {
 
         if let Some(prev_step) = self.previous_step.as_ref() {
             let reward_value = track_progress_reward_function(&state);
+            // godot_print!("Reward: {}", reward_value);
             let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
 
             if self.episode.steps % (self.train_every_n_frames as usize) == 0 {

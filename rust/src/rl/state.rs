@@ -124,13 +124,15 @@ pub fn normalize_state(
 ) -> Tensor<Backend, 2> {
     type Agent = AgentStateComponent;
 
+    const Y_MULTIPLIER: f32 = 10.0;
+
     let ring_distance_normalized =
         tanh((agent_state[Agent::RingDistance] * config.position_scale) as f64) as f32;
 
-    return Tensor::<Backend, 1>::from_data(
+    let normalized = Tensor::<Backend, 1>::from_data(
         [
             agent_state[Agent::LinearVelocityX] * config.linear_velocity_scale,
-            agent_state[Agent::LinearVelocityY] * config.linear_velocity_scale,
+            agent_state[Agent::LinearVelocityY] * config.linear_velocity_scale * Y_MULTIPLIER,
             agent_state[Agent::LinearVelocityZ] * config.linear_velocity_scale,
             agent_state[Agent::AngularVelocityX] * config.angular_velocity_scale,
             agent_state[Agent::AngularVelocityY] * config.angular_velocity_scale,
@@ -138,11 +140,16 @@ pub fn normalize_state(
             agent_state[Agent::RotationAngleX] * config.angle_scale,
             agent_state[Agent::RotationAngleZ] * config.angle_scale,
             agent_state[Agent::RingDirectionX],
-            agent_state[Agent::RingDirectionY],
+            agent_state[Agent::RingDirectionY] * Y_MULTIPLIER,
             agent_state[Agent::RingDirectionZ],
             ring_distance_normalized,
         ],
         &DEVICE,
     )
     .reshape([1, STATE_DIM]);
+
+    // godot_print!("State: {}", agent_state);
+    // godot_print!("Normalized: {}", normalized);
+
+    return normalized;
 }
