@@ -81,7 +81,7 @@ impl<B: Backend> ActorModel<B> {
         for dim in hidden_layers {
             layers.push(
                 LinearConfig::new(prev_dim, *dim)
-                    .with_initializer(Initializer::Zeros)
+                    .with_initializer(Initializer::XavierUniform { gain: 1.0 })
                     .init(device),
             );
             prev_dim = *dim;
@@ -89,7 +89,7 @@ impl<B: Backend> ActorModel<B> {
 
         layers.push(
             LinearConfig::new(prev_dim, action_dim)
-                .with_initializer(Initializer::Zeros)
+                .with_initializer(Initializer::XavierUniform { gain: 0.01 })
                 .init(device),
         );
 
