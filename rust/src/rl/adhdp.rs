@@ -10,8 +10,12 @@ use burn::{
     module::Module,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
+    tensor::Distribution,
 };
 use godot::prelude::*;
+
+type ActorOptimizer = OptimizerAdaptor<Adam, ActorModel<Backend>, Backend>;
+type CriticOptimizer = OptimizerAdaptor<Adam, CriticModel<Backend>, Backend>;
 
 pub struct ADHDPConfig {
     /// Bellman equation gamma parameter.
@@ -28,12 +32,20 @@ pub struct ADHDPConfig {
     pub actor_hidden_layers: Vec<usize>,
     /// Hidden layer sizes for the critic model.
     pub critic_hidden_layers: Vec<usize>,
+    /// TD3: number of critic updates between each actor and target network update.
+    pub policy_delay: usize,
+    /// TD3: standard deviation of the target policy smoothing noise.
+    pub target_noise_std: f32,
+    /// TD3: absolute bound applied to the target policy smoothing noise.
+    pub target_noise_clip: f32,
 }
 
-/// Losses from one ADHDP train step.
+/// Losses from one TD3 train step.
 pub struct ADHDPLosses {
+    /// Mean of the two critic losses.
     pub critic_loss: f32,
-    pub actor_loss: f32,
+    /// `None` on steps where the policy delay skipped the actor update.
+    pub actor_loss: Option<f32>,
 }
 
 pub struct ADHDPTerminalTrainData {
@@ -57,23 +69,48 @@ pub enum ADHDPTrainData {
     Terminal(ADHDPTerminalTrainData),
 }
 
-/// Action Dependent Heuristic Dynamic Programming RL implementation.
+/// Read a scalar loss tensor back to the CPU.
+fn loss_value(loss: Tensor<Backend, 1>) -> f32 {
+    loss.into_data().to_vec::<f32>().expect("Failed to read loss")[0]
+}
+
+/// TD3 (Twin Delayed DDPG) actor-critic implementation.
+///
+/// Three differences from plain DDPG, all aimed at the failure where the actor learns
+/// to exploit errors in the critic and drags both networks down with it:
+///   1. Two independently initialized critics, whose *minimum* forms the Bellman
+///      target, so an error in one of them cannot inflate the target on its own.
+///   2. The actor and target networks update only every `policy_delay` critic updates,
+///      so the actor chases a value estimate that has had time to settle.
+///   3. Noise on the target action, so a sharp peak in the critic's approximation
+///      cannot be exploited by the actor.
 pub struct ADHDP {
     /// The online actor model.
     actor: ActorModel<Backend>,
-    /// The online critic model.
-    critic: CriticModel<Backend>,
+    /// First online critic.
+    critic_1: CriticModel<Backend>,
+    /// Second online critic. Its *independent* random initialization is what makes its
+    /// errors differ from `critic_1`, which is the whole point of taking the minimum.
+    critic_2: CriticModel<Backend>,
+
     /// The target actor model, used for stabilizing training.
     target_actor: ActorModel<Backend>,
-    /// The target critic model, used for stabilizing training.
-    target_critic: CriticModel<Backend>,
+    /// Target counterpart of `critic_1`.
+    target_critic_1: CriticModel<Backend>,
+    /// Target counterpart of `critic_2`.
+    target_critic_2: CriticModel<Backend>,
 
     /// Adam optimizer for the actor model.
-    actor_optimizer: OptimizerAdaptor<Adam, ActorModel<Backend>, Backend>,
-    /// Adam optimizer for the critic model.
-    critic_optimizer: OptimizerAdaptor<Adam, CriticModel<Backend>, Backend>,
+    actor_optimizer: ActorOptimizer,
+    /// Adam optimizer for `critic_1`.
+    critic_1_optimizer: CriticOptimizer,
+    /// Adam optimizer for `critic_2`.
+    critic_2_optimizer: CriticOptimizer,
 
-    /// Configuration of ADHDP.
+    /// Number of `train` calls so far, used to apply the policy delay.
+    train_steps: usize,
+
+    /// Configuration of TD3.
     pub config: ADHDPConfig,
 }
 
@@ -81,7 +118,13 @@ impl ADHDP {
     pub fn new(config: ADHDPConfig) -> Self {
         let actor =
             ActorModel::<Backend>::new(STATE_DIM, ACTION_DIM, &config.actor_hidden_layers, &DEVICE);
-        let critic = CriticModel::<Backend>::new(
+        let critic_1 = CriticModel::<Backend>::new(
+            STATE_DIM,
+            ACTION_DIM,
+            &config.critic_hidden_layers,
+            &DEVICE,
+        );
+        let critic_2 = CriticModel::<Backend>::new(
             STATE_DIM,
             ACTION_DIM,
             &config.critic_hidden_layers,
@@ -89,101 +132,135 @@ impl ADHDP {
         );
 
         let target_actor = actor.clone();
-        let target_critic = critic.clone();
+        let target_critic_1 = critic_1.clone();
+        let target_critic_2 = critic_2.clone();
 
         let actor_optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
             .build()
             .into();
-        let critic_optimizer = AdamConfig::new()
+        let critic_1_optimizer = AdamConfig::new()
+            .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
+            .build()
+            .into();
+        let critic_2_optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
             .build()
             .into();
 
         return Self {
             actor,
-            critic,
+            critic_1,
+            critic_2,
             target_actor,
-            target_critic,
+            target_critic_1,
+            target_critic_2,
             actor_optimizer,
-            critic_optimizer,
+            critic_1_optimizer,
+            critic_2_optimizer,
+            train_steps: 0,
             config,
         };
     }
 
     /// Train the models, returning their losses for the provided data.
     pub fn train(&mut self, data: ADHDPTrainData) -> ADHDPLosses {
-        // 1. critic update
-        let critic_update_actor = if self.config.use_target_networks {
-            &self.target_actor
-        } else {
-            &self.actor
-        };
-        let critic_update_critic = if self.config.use_target_networks {
-            &self.target_critic
-        } else {
-            &self.critic
-        };
+        self.train_steps += 1;
 
+        // 1. Build the Bellman target.
         let (x, u, target) = match data {
             ADHDPTrainData::Step(step) => {
-                let u_next = critic_update_actor.forward(step.x_next.clone()).detach();
-                let j_next = critic_update_critic.forward(step.x_next, u_next).detach();
+                let (target_actor, target_critic_1, target_critic_2) =
+                    if self.config.use_target_networks {
+                        (
+                            &self.target_actor,
+                            &self.target_critic_1,
+                            &self.target_critic_2,
+                        )
+                    } else {
+                        (&self.actor, &self.critic_1, &self.critic_2)
+                    };
+
+                // Target policy smoothing.
+                let mut u_next = target_actor.forward(step.x_next.clone());
+                if self.config.target_noise_std > 0.0 {
+                    let noise = u_next
+                        .random_like(Distribution::Normal(
+                            0.0,
+                            self.config.target_noise_std as f64,
+                        ))
+                        .clamp(-self.config.target_noise_clip, self.config.target_noise_clip);
+                    u_next = u_next + noise;
+                }
+                let u_next = u_next.clamp(-1.0, 1.0).detach();
+
+                // Clipped double-Q: take the more pessimistic of the two estimates.
+                let j_1 = target_critic_1.forward(step.x_next.clone(), u_next.clone());
+                let j_2 = target_critic_2.forward(step.x_next, u_next);
+                let j_next = j_1.min_pair(j_2).detach();
+
                 let target = step.reward + j_next.mul_scalar(self.config.gamma);
 
                 (step.x, step.u, target)
             }
-            ADHDPTrainData::Terminal(terminal) => {
-                let target = terminal.reward;
-
-                (terminal.x, terminal.u, target)
-            }
+            ADHDPTrainData::Terminal(terminal) => (terminal.x, terminal.u, terminal.reward),
         };
 
-        let j_pred = self.critic.forward(x.clone(), u.clone());
-        let critic_loss = (target - j_pred).powf_scalar(2.0).mean();
-        let critic_loss_value = critic_loss
-            .clone()
-            .into_data()
-            .to_vec::<f32>()
-            .expect("Failed to read critic loss")[0];
+        // 2. Update both critics against that same target.
+        let j_1_pred = self.critic_1.forward(x.clone(), u.clone());
+        let critic_1_loss = (target.clone() - j_1_pred).powf_scalar(2.0).mean();
+        let critic_1_loss_value = loss_value(critic_1_loss.clone());
 
-        let grads = critic_loss.backward();
-        let grads = GradientsParams::from_grads(grads, &self.critic);
-        self.critic = self.critic_optimizer.step(
+        let grads = critic_1_loss.backward();
+        let grads = GradientsParams::from_grads(grads, &self.critic_1);
+        self.critic_1 = self.critic_1_optimizer.step(
             self.config.critic_learning_rate,
-            self.critic.clone(),
+            self.critic_1.clone(),
             grads,
         );
 
-        // 2. actor update (maximize J)
-        let u_pred = self.actor.forward(x.clone());
-        let j_for_actor = self.critic.forward(x, u_pred).mean();
-        let actor_loss = j_for_actor.neg();
-        let actor_loss_value = actor_loss
-            .clone()
-            .into_data()
-            .to_vec::<f32>()
-            .expect("Failed to read actor loss")[0]
-            .abs();
+        let j_2_pred = self.critic_2.forward(x.clone(), u);
+        let critic_2_loss = (target - j_2_pred).powf_scalar(2.0).mean();
+        let critic_2_loss_value = loss_value(critic_2_loss.clone());
 
-        let grads = actor_loss.backward();
-        let grads = GradientsParams::from_grads(grads, &self.actor);
-        self.actor =
-            self.actor_optimizer
-                .step(self.config.actor_learning_rate, self.actor.clone(), grads);
+        let grads = critic_2_loss.backward();
+        let grads = GradientsParams::from_grads(grads, &self.critic_2);
+        self.critic_2 = self.critic_2_optimizer.step(
+            self.config.critic_learning_rate,
+            self.critic_2.clone(),
+            grads,
+        );
 
-        // 3. Polyak averaging of target networks
-        if self.config.use_target_networks {
-            self.target_actor
-                .polyak_update(&self.actor, self.config.tau);
-            self.target_critic
-                .polyak_update(&self.critic, self.config.tau);
-        }
+        // 3. Delayed actor update (maximize J), followed by the target networks.
+        let actor_loss = if self.train_steps % self.config.policy_delay.max(1) == 0 {
+            let u_pred = self.actor.forward(x.clone());
+            let j_for_actor = self.critic_1.forward(x, u_pred).mean();
+            let actor_loss = j_for_actor.neg();
+            let actor_loss_value = loss_value(actor_loss.clone()).abs();
+
+            let grads = actor_loss.backward();
+            let grads = GradientsParams::from_grads(grads, &self.actor);
+            self.actor =
+                self.actor_optimizer
+                    .step(self.config.actor_learning_rate, self.actor.clone(), grads);
+
+            if self.config.use_target_networks {
+                self.target_actor
+                    .polyak_update(&self.actor, self.config.tau);
+                self.target_critic_1
+                    .polyak_update(&self.critic_1, self.config.tau);
+                self.target_critic_2
+                    .polyak_update(&self.critic_2, self.config.tau);
+            }
+
+            Some(actor_loss_value)
+        } else {
+            None
+        };
 
         return ADHDPLosses {
-            actor_loss: actor_loss_value,
-            critic_loss: critic_loss_value,
+            critic_loss: (critic_1_loss_value + critic_2_loss_value) / 2.0,
+            actor_loss,
         };
     }
 
@@ -204,36 +281,68 @@ impl ADHDP {
             godot_print!("Failed to save actor: {e}");
         }
         if let Err(e) = self
-            .critic
+            .critic_1
             .clone()
             .save_file(format!("{}/critic_{}", dir, suffix), &recorder)
         {
-            godot_print!("Failed to save critic: {e}");
+            godot_print!("Failed to save critic 1: {e}");
+        }
+        if let Err(e) = self
+            .critic_2
+            .clone()
+            .save_file(format!("{}/critic2_{}", dir, suffix), &recorder)
+        {
+            godot_print!("Failed to save critic 2: {e}");
         }
 
         godot_print!("Saved model to file");
     }
 
-    /// Load actor weights from disk, replacing the current model
+    /// Load actor weights from disk, replacing the current model.
     pub fn load_actor(&mut self, path: &str) {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
 
         match self.actor.clone().load_file(path, &recorder, &DEVICE) {
-            Ok(actor) => self.actor = actor,
+            Ok(actor) => {
+                self.actor = actor;
+                // The target has to start out equal to the online network. Leaving it
+                // at its random initialization feeds garbage into every Bellman target
+                // and destroys the weights that were just loaded.
+                self.target_actor = self.actor.clone();
+                godot_print!("Loaded actor model from {path}");
+            }
             Err(e) => godot_print!("Failed to load actor: {e}"),
         }
-
-        godot_print!("Loaded critic model from {path}");
     }
 
-    /// Load critic weights from disk, replacing the current model
+    /// Load the first critic's weights from disk, replacing the current model.
     pub fn load_critic(&mut self, path: &str) {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-        match self.critic.clone().load_file(path, &recorder, &DEVICE) {
-            Ok(critic) => self.critic = critic,
+
+        match self.critic_1.clone().load_file(path, &recorder, &DEVICE) {
+            Ok(critic) => {
+                self.critic_1 = critic;
+                self.target_critic_1 = self.critic_1.clone();
+                godot_print!("Loaded critic model from {path}");
+            }
             Err(e) => godot_print!("Failed to load critic: {e}"),
         }
+    }
 
-        godot_print!("Loaded critic model from {path}");
+    /// Load the second critic's weights from disk, replacing the current model.
+    /// Leaving this unset is safe: a freshly initialized `critic_2` predicts near zero,
+    /// which is above any real (negative) return, so `min` simply defers to `critic_1`
+    /// until `critic_2` has caught up.
+    pub fn load_critic_2(&mut self, path: &str) {
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+
+        match self.critic_2.clone().load_file(path, &recorder, &DEVICE) {
+            Ok(critic) => {
+                self.critic_2 = critic;
+                self.target_critic_2 = self.critic_2.clone();
+                godot_print!("Loaded second critic model from {path}");
+            }
+            Err(e) => godot_print!("Failed to load second critic: {e}"),
+        }
     }
 }

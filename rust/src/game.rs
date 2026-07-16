@@ -60,5 +60,11 @@ impl Game {
         helicopter.set_linear_velocity(self.helicopter_initial_linear_velocity);
         helicopter.set_rotation(self.helicopter_initial_rotation);
         helicopter.set_angular_velocity(self.helicopter_initial_angular_velocity);
+
+        // Flapping is integrated state, and part of the agent's observation. Leaving it
+        // to carry over means each episode starts from wherever the last one ended.
+        let mut helicopter_bind = helicopter.bind_mut();
+        helicopter_bind.lon_flapping = 0.0;
+        helicopter_bind.lat_flapping = 0.0;
     }
 }

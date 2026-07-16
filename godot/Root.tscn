@@ -11,15 +11,19 @@ helicopter = NodePath("Helicopter")
 
 [node name="Agent" type="Agent" parent="." unique_id=326518141 node_paths=PackedStringArray("game")]
 game = NodePath("..")
-output_directory = "Q:\\Github\\vho\\output"
-saved_critic_model = "Q:\\Github\\vho\\output\\run_2026_07_15__16_57_39\\critic_100.mpk"
-saved_actor_model = "Q:\\Github\\vho\\output\\run_2026_07_15__16_57_39\\actor_100.mpk"
-train_every_n_frames = 4
+output_directory = "E:\\Github\\vho-claude\\out"
+saved_critic_model = "E:\\Github\\vho-claude\\out\\latest\\critic_best.mpk"
+saved_critic_2_model = "E:\\Github\\vho-claude\\out\\latest\\critic2_best.mpk"
+saved_actor_model = "E:\\Github\\vho-claude\\out\\latest\\actor_best.mpk"
+saved_normalization_model = "E:\\Github\\vho-claude\\out\\latest\\normalization_best.bin"
+train_every_n_frames = 2
 max_episode_time = 4.999999999999985
-critic_hidden_layers = Array[int]([512, 512])
-actor_hidden_layers = Array[int]([512, 512])
-noise_update_threshold = 0.999999999999997
-use_target_networks = false
+critic_hidden_layers = Array[int]([64, 64])
+actor_hidden_layers = Array[int]([64, 64])
+critic_learning_rate = 9.999999999999967e-05
+noise_start = 0.1999999999999994
+noise_min = 0.000999999999999997
+noise_decay = 2099.9999999999936
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_24d08")]
 transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 2.7574224, 0)

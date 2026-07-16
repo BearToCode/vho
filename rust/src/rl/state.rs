@@ -148,6 +148,14 @@ impl OnlineStateNormalization {
         }
     }
 
+    /// Normalize a state vector component-wise, appending the result to `out`.
+    /// Used to normalize a whole replay batch with one consistent set of statistics.
+    pub fn normalize_into(&self, state: &AgentStateVector, out: &mut Vec<f32>) {
+        for i in 0..STATE_DIM {
+            out.push(self.stats[i].normalize(state[i] as f64) as f32);
+        }
+    }
+
     /// Normalize the state vector using the running statistics.
     pub fn normalize(&self, state: &AgentStateVector) -> Tensor<Backend, 2> {
         let mut normalized = AgentStateVector::zeros();

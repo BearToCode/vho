@@ -7076,6 +7076,7 @@ dependencies = [
  "godot",
  "nalgebra",
  "probability",
+ "rand 0.9.4",
 ]
 
 [[package]]

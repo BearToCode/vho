@@ -5,18 +5,32 @@ use probability::source;
 use crate::{
     game::Game,
     rl::{
-        Backend, DEVICE,
-        action::{OuNoise, perform_action},
+        Backend,
+        action::{ACTION_DIM, OuNoise, perform_action},
         adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTrainData},
         episode::Episode,
+        replay_buffer::{ReplayBuffer, Transition},
         reward::stability_reward_function,
-        state::{OnlineStateNormalization, get_agent_state},
+        state::{AgentStateVector, OnlineStateNormalization, get_agent_state},
     },
 };
 
 struct StepData {
-    x: Tensor<Backend, 2>,
-    u: Tensor<Backend, 2>,
+    /// Un-normalized state, so the replay buffer can re-normalize with fresh statistics.
+    state: AgentStateVector,
+    u: [f32; ACTION_DIM],
+}
+
+/// Read a `[1, N]` tensor's data out into a plain `[f32; N]` array.
+fn to_array<const N: usize>(t: &Tensor<Backend, 2>) -> [f32; N] {
+    let data = t
+        .clone()
+        .into_data()
+        .to_vec::<f32>()
+        .expect("Failed to read tensor data");
+
+    data.try_into()
+        .unwrap_or_else(|data: Vec<f32>| panic!("Expected {N} elements, got {}", data.len()))
 }
 
 #[derive(GodotClass)]
@@ -48,6 +62,8 @@ pub struct Agent {
     best_episode_reward: f32,
     /// Online normalization
     normalization: OnlineStateNormalization,
+    /// Experience replay buffer.
+    replay_buffer: Option<ReplayBuffer>,
 
     /* Exported to the inspector */
     #[export]
@@ -63,6 +79,11 @@ pub struct Agent {
     #[var(hint = FILE)]
     /// Saved critic model. Will load it if specified.
     saved_critic_model: GString,
+    #[export(file)]
+    #[var(hint = FILE)]
+    /// Saved second (TD3 twin) critic model. Will load it if specified.
+    /// Safe to leave unset when warm-starting from a pre-TD3 checkpoint.
+    saved_critic_2_model: GString,
     #[export(file)]
     #[var(hint = FILE)]
     /// Saved actor model. Will load it if specified.
@@ -122,22 +143,27 @@ pub struct Agent {
     /// Polyak averaging coefficient for target networks.
     tau: f32,
 
-    #[export_subgroup(name = "State Normalization")]
+    #[export_subgroup(name = "TD3")]
     #[export]
-    /// Angular velocity scale for state normalization.
-    angular_velocity_scale: f32,
+    /// Number of critic updates between each actor and target network update.
+    policy_delay: i32,
     #[export]
-    /// Linear velocity scale for state normalization.
-    linear_velocity_scale: f32,
+    /// Standard deviation of the target policy smoothing noise.
+    target_noise_std: f32,
     #[export]
-    /// Angle scale for state normalization.
-    angle_scale: f32,
+    /// Absolute bound applied to the target policy smoothing noise.
+    target_noise_clip: f32,
+
+    #[export_subgroup(name = "Replay Buffer")]
     #[export]
-    /// Position scale for state normalization.
-    position_scale: f32,
+    /// Maximum number of transitions kept in the replay buffer.
+    replay_buffer_capacity: i32,
     #[export]
-    /// Flap angle scale for state normalization.
-    flap_angle_scale: f32,
+    /// Number of transitions sampled per training step.
+    batch_size: i32,
+    #[export]
+    /// Minimum number of transitions collected before training starts.
+    min_replay_size: i32,
 }
 
 #[godot_api]
@@ -159,17 +185,22 @@ impl INode3D for Agent {
             best_episode_reward: f32::NEG_INFINITY,
             noise_seed: 1,
             normalization: OnlineStateNormalization::new(),
+            replay_buffer: None,
 
             /* Exported to the inspector */
             game: None,
 
             output_directory: "".into(),
             saved_critic_model: "".into(),
+            saved_critic_2_model: "".into(),
             saved_actor_model: "".into(),
             saved_normalization_model: "".into(),
 
             train_every_n_frames: 1,
-            gamma: 0.95,
+            // At 30 Hz physics, the effective horizon is 1/(1 - gamma) steps: 0.95 only
+            // looks 0.67 s ahead, which is far too myopic for position control. 0.99
+            // gives ~3.3 s.
+            gamma: 0.99,
             max_episode_time: 10.0,
             critic_hidden_layers: Array::from_iter(vec![128, 128]),
             actor_hidden_layers: Array::from_iter(vec![128, 128]),
@@ -180,16 +211,21 @@ impl INode3D for Agent {
             use_noise: true,
             noise_start: 0.4,
             noise_min: 0.05,
-            noise_decay: 120.0,
+            // Measured in sim seconds. Learning needs on the order of 10^5 steps
+            // (~1 hour at 30 Hz), so decaying over ~2 minutes would leave almost the
+            // entire run with no exploration.
+            noise_decay: 1200.0,
 
             use_target_networks: true,
             tau: 0.005,
 
-            linear_velocity_scale: 1.0,
-            angular_velocity_scale: 1.0,
-            angle_scale: 1.0,
-            position_scale: 1.0,
-            flap_angle_scale: 1.0,
+            policy_delay: 2,
+            target_noise_std: 0.2,
+            target_noise_clip: 0.5,
+
+            replay_buffer_capacity: 100_000,
+            batch_size: 128,
+            min_replay_size: 1000,
         }
     }
 
@@ -209,6 +245,9 @@ impl INode3D for Agent {
             critic_learning_rate: self.critic_learning_rate,
             use_target_networks: self.use_target_networks,
             tau: self.tau,
+            policy_delay: self.policy_delay.max(1) as usize,
+            target_noise_std: self.target_noise_std,
+            target_noise_clip: self.target_noise_clip,
             actor_hidden_layers: self
                 .actor_hidden_layers
                 .iter_shared()
@@ -228,6 +267,10 @@ impl INode3D for Agent {
 
         if !self.saved_critic_model.is_empty() {
             adhdp.load_critic(&self.saved_critic_model.to_string());
+        }
+
+        if !self.saved_critic_2_model.is_empty() {
+            adhdp.load_critic_2(&self.saved_critic_2_model.to_string());
         }
 
         if !self.saved_normalization_model.is_empty() {
@@ -255,6 +298,8 @@ impl INode3D for Agent {
         self.noise_source = Some(source::default(self.noise_seed as u64));
         self.ou_noise = Some(OuNoise::new(0.15, 0.2));
 
+        self.replay_buffer = Some(ReplayBuffer::new(self.replay_buffer_capacity as usize));
+
         self.adhdp = Some(adhdp);
     }
 
@@ -277,14 +322,6 @@ impl INode3D for Agent {
         let game_bind = game.bind();
         let helicopter = game_bind.helicopter.clone().unwrap();
 
-        // let normalization_config = StateNormalizationConfig {
-        //     angle_scale: self.angle_scale,
-        //     linear_velocity_scale: self.linear_velocity_scale,
-        //     angular_velocity_scale: self.angular_velocity_scale,
-        //     position_scale: self.position_scale,
-        //     flap_angle_scale: self.flap_angle_scale,
-        // };
-
         let state = get_agent_state(game.clone());
 
         self.normalization.update(&state);
@@ -293,19 +330,39 @@ impl INode3D for Agent {
         if let Some(prev_step) = self.previous_step.as_ref() {
             let reward_value = stability_reward_function(&state);
             // godot_print!("Reward: {}", reward_value);
-            let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
 
-            if self.episode.steps % (self.train_every_n_frames as usize) == 0 {
-                let losses = adhdp.train(ADHDPTrainData::Step(ADHDPStepTrainData {
-                    x: prev_step.x.clone(),
-                    u: prev_step.u.clone(),
-                    reward,
-                    x_next: x.clone(),
-                }));
+            // Store raw states: normalization statistics keep drifting, so a state
+            // normalized at collection time would disagree with one normalized later.
+            // Normalizing at sample time keeps every batch internally consistent.
+            let replay_buffer = self.replay_buffer.as_mut().unwrap();
+            replay_buffer.push(Transition {
+                state: prev_step.state,
+                action: prev_step.u,
+                reward: reward_value,
+                next_state: state,
+            });
 
-                self.episode.critic_loss_sum += losses.critic_loss;
-                self.episode.actor_loss_sum += losses.actor_loss;
-                self.episode.train_steps += 1;
+            if self.episode.steps % (self.train_every_n_frames as usize) == 0
+                && replay_buffer.len() >= self.min_replay_size as usize
+            {
+                if let Some((x, u, reward, x_next)) =
+                    replay_buffer.sample(self.batch_size as usize, &self.normalization)
+                {
+                    let losses = adhdp.train(ADHDPTrainData::Step(ADHDPStepTrainData {
+                        x,
+                        u,
+                        reward,
+                        x_next,
+                    }));
+
+                    self.episode.critic_loss_sum += losses.critic_loss;
+                    self.episode.train_steps += 1;
+                    // The actor only updates every `policy_delay` steps.
+                    if let Some(actor_loss) = losses.actor_loss {
+                        self.episode.actor_loss_sum += actor_loss;
+                        self.episode.actor_train_steps += 1;
+                    }
+                }
             }
 
             self.episode.accumulated_reward += reward_value;
@@ -327,9 +384,13 @@ impl INode3D for Agent {
             }
         }
         let u = u.clamp(-1.0, 1.0);
-        perform_action(u.clone(), helicopter);
+        let u_values = to_array(&u);
+        perform_action(u, helicopter);
 
-        self.previous_step = Some(StepData { x, u });
+        self.previous_step = Some(StepData {
+            state,
+            u: u_values,
+        });
     }
 }
 
@@ -356,6 +417,10 @@ impl Agent {
         if self.episode.accumulated_reward > self.best_episode_reward {
             self.best_episode_reward = self.episode.accumulated_reward;
             adhdp.save(&self.run_directory, "best");
+            // The weights are meaningless without the statistics used to normalize
+            // their inputs, so this must be saved alongside them to be reloadable.
+            self.normalization
+                .save(&format!("{}normalization_best.bin", self.run_directory));
         }
 
         // Restart the exploration process so each episode explores independently.

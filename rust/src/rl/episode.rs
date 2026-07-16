@@ -18,6 +18,9 @@ pub struct Episode {
     pub actor_loss_sum: f32,
     /// Number of train_step calls this episode (for averaging).
     pub train_steps: usize,
+    /// Number of those steps that actually updated the actor. TD3's policy delay means
+    /// this is a fraction of `train_steps`, so the actor loss needs its own divisor.
+    pub actor_train_steps: usize,
 }
 
 impl Episode {
@@ -31,6 +34,7 @@ impl Episode {
             critic_loss_sum: 0.0,
             actor_loss_sum: 0.0,
             train_steps: 0,
+            actor_train_steps: 0,
         }
     }
 
@@ -68,8 +72,8 @@ impl Episode {
         } else {
             0.0
         };
-        let avg_actor_loss = if self.train_steps > 0 {
-            self.actor_loss_sum / self.train_steps as f32
+        let avg_actor_loss = if self.actor_train_steps > 0 {
+            self.actor_loss_sum / self.actor_train_steps as f32
         } else {
             0.0
         };
@@ -98,8 +102,8 @@ impl Display for Episode {
         } else {
             0.0
         };
-        let avg_actor_loss = if self.train_steps > 0 {
-            self.actor_loss_sum / self.train_steps as f32
+        let avg_actor_loss = if self.actor_train_steps > 0 {
+            self.actor_loss_sum / self.actor_train_steps as f32
         } else {
             0.0
         };
