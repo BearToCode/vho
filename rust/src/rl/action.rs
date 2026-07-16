@@ -35,12 +35,43 @@ pub fn perform_action(u: Tensor<Backend, 2>, mut helicopter: Gd<Helicopter>) {
     helicopter_bind.tail_rotor_cyclic = control_normalized[3];
 }
 
-pub fn get_noise<S: Source>(noise_std: f32, source: &mut S) -> Tensor<Backend, 2> {
-    // Tensor of gaussian noise with mean 0 and standard deviation `noise_std`
-    let distribution = Gaussian::new(0.0, noise_std as f64);
-    let noise: Vec<f32> = (0..ACTION_DIM)
-        .map(|_| distribution.sample(source) as f32)
-        .collect();
+/// Ornstein-Uhlenbeck exploration noise. Temporally correlated noise explores
+/// integrated flight dynamics far better than per-step i.i.d. Gaussian noise, which
+/// tends to average out before it meaningfully perturbs the helicopter.
+pub struct OuNoise {
+    /// Running per-action-dimension noise state.
+    state: [f32; ACTION_DIM],
+    /// Mean-reversion rate: how strongly the state is pulled back toward zero.
+    theta: f32,
+    /// Volatility of the driving Gaussian process.
+    sigma: f32,
+}
 
-    Tensor::<Backend, 1>::from_floats(noise.as_slice(), &DEVICE).reshape([1, ACTION_DIM])
+impl OuNoise {
+    pub fn new(theta: f32, sigma: f32) -> Self {
+        Self {
+            state: [0.0; ACTION_DIM],
+            theta,
+            sigma,
+        }
+    }
+
+    /// Reset the internal state to zero (call at the start of each episode).
+    pub fn reset(&mut self) {
+        self.state = [0.0; ACTION_DIM];
+    }
+
+    /// Advance the process by `dt` and return the current noise as a `[1, ACTION_DIM]`
+    /// tensor. `scale` multiplies the output so callers can decay exploration over time.
+    pub fn sample<S: Source>(&mut self, dt: f32, scale: f32, source: &mut S) -> Tensor<Backend, 2> {
+        let distribution = Gaussian::new(0.0, 1.0);
+        let mut out = [0.0f32; ACTION_DIM];
+        for i in 0..ACTION_DIM {
+            let dw = distribution.sample(source) as f32 * dt.sqrt();
+            self.state[i] += -self.theta * self.state[i] * dt + self.sigma * dw;
+            out[i] = self.state[i] * scale;
+        }
+
+        Tensor::<Backend, 1>::from_floats(out.as_slice(), &DEVICE).reshape([1, ACTION_DIM])
+    }
 }
