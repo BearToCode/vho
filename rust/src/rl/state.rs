@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Dimension of the state input of the model.
-pub const STATE_DIM: usize = 8;
+pub const STATE_DIM: usize = 11;
 
 pub type AgentStateVector = SVector<f32, STATE_DIM>;
 
@@ -33,6 +33,12 @@ pub enum AgentStateComponent {
     RotationAngleX,
     /// [rad/s] Helicopter pitch angle.
     RotationAngleZ,
+    /// [m] Position error (current - initial) along global x.
+    PositionX,
+    /// [m] Position error (current - initial) along global y.
+    PositionY,
+    /// [m] Position error (current - initial) along global z.
+    PositionZ,
 }
 
 impl Index<AgentStateComponent> for AgentStateVector {
@@ -68,6 +74,10 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
 
     let helicopter_rotation = helicopter.get_rotation();
 
+    // Position error from the target hover point (the pose at scene start).
+    let position_error =
+        helicopter.get_global_position() - game_bind.helicopter_initial_position();
+
     let helicopter_linear_velocity = helicopter.get_linear_velocity();
     let helicopter_angular_velocity = helicopter.get_angular_velocity();
 
@@ -85,6 +95,9 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     agent_state[Agent::AngularVelocityZ] = helicopter_local_angular_velocity.z;
     agent_state[Agent::RotationAngleX] = helicopter_rotation.x;
     agent_state[Agent::RotationAngleZ] = helicopter_rotation.z;
+    agent_state[Agent::PositionX] = position_error.x;
+    agent_state[Agent::PositionY] = position_error.y;
+    agent_state[Agent::PositionZ] = position_error.z;
 
     return agent_state;
 }
@@ -106,6 +119,9 @@ pub fn normalize_state(
             agent_state[Agent::AngularVelocityZ] * config.angular_velocity_scale,
             agent_state[Agent::RotationAngleX] * config.angle_scale,
             agent_state[Agent::RotationAngleZ] * config.angle_scale,
+            agent_state[Agent::PositionX] * config.position_scale,
+            agent_state[Agent::PositionY] * config.position_scale,
+            agent_state[Agent::PositionZ] * config.position_scale,
         ],
         &DEVICE,
     )
