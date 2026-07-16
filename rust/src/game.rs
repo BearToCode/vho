@@ -61,10 +61,19 @@ impl Game {
         helicopter.set_rotation(self.helicopter_initial_rotation);
         helicopter.set_angular_velocity(self.helicopter_initial_angular_velocity);
 
+        let mut helicopter_bind = helicopter.bind_mut();
+
         // Flapping is integrated state, and part of the agent's observation. Leaving it
         // to carry over means each episode starts from wherever the last one ended.
-        let mut helicopter_bind = helicopter.bind_mut();
         helicopter_bind.lon_flapping = 0.0;
         helicopter_bind.lat_flapping = 0.0;
+
+        // The agent returns before acting on the frame it resets, but the helicopter
+        // still integrates afterwards, so stale controls would apply one frame of the
+        // previous episode's final action to the new initial state.
+        helicopter_bind.collective = 0.0;
+        helicopter_bind.lateral_cyclic = 0.0;
+        helicopter_bind.longitudinal_cyclic = 0.0;
+        helicopter_bind.tail_rotor_cyclic = 0.0;
     }
 }

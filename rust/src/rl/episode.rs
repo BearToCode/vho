@@ -21,6 +21,9 @@ pub struct Episode {
     /// Number of those steps that actually updated the actor. TD3's policy delay means
     /// this is a fraction of `train_steps`, so the actor loss needs its own divisor.
     pub actor_train_steps: usize,
+    /// Whether this was a noise-free evaluation episode. Its reward is comparable across
+    /// episodes; a training episode's is not.
+    pub evaluation: bool,
 }
 
 impl Episode {
@@ -35,6 +38,7 @@ impl Episode {
             actor_loss_sum: 0.0,
             train_steps: 0,
             actor_train_steps: 0,
+            evaluation: false,
         }
     }
 
@@ -60,7 +64,7 @@ impl Episode {
         };
 
         if !file_exists {
-            let header = "index,episode_time,steps,noise,episode_reward,avg_critic_loss,avg_actor_loss\n";
+            let header = "index,episode_time,steps,noise,episode_reward,avg_critic_loss,avg_actor_loss,evaluation\n";
             if let Err(e) = file.write_all(header.as_bytes()) {
                 godot_error!("Failed to write CSV header: {e}");
                 return;
@@ -79,7 +83,7 @@ impl Episode {
         };
 
         let row = format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{}\n",
             self.index,
             self.time,
             self.steps,
@@ -87,6 +91,7 @@ impl Episode {
             self.accumulated_reward,
             avg_critic_loss,
             avg_actor_loss,
+            self.evaluation as u8,
         );
 
         if let Err(e) = file.write_all(row.as_bytes()) {
@@ -111,13 +116,14 @@ impl Display for Episode {
         write!(
             f,
             "idx: {} \t| t: {:.2} \t| rwd: {:.2} \t| critic_loss: {:.2} \t| \
-             actor_loss: {:.2} \t| noise: {:.2}",
+             actor_loss: {:.2} \t| noise: {:.2}{}",
             self.index,
             self.time,
             self.accumulated_reward,
             avg_critic_loss,
             avg_actor_loss,
             self.noise,
+            if self.evaluation { " \t| EVAL" } else { "" },
         )
     }
 }

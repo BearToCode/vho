@@ -58,8 +58,10 @@ pub struct Agent {
     noise_source: Option<source::Default>,
     /// Ornstein-Uhlenbeck exploration process.
     ou_noise: Option<OuNoise>,
-    /// Best episode reward seen so far (for saving the best policy).
+    /// Best deterministic evaluation reward seen so far (for saving the best policy).
     best_episode_reward: f32,
+    /// Whether the current episode is a no-noise, no-training evaluation episode.
+    evaluating: bool,
     /// Online normalization
     normalization: OnlineStateNormalization,
     /// Experience replay buffer.
@@ -104,6 +106,11 @@ pub struct Agent {
     /// Maximum duration of each episode in seconds.
     max_episode_time: f32,
     #[export]
+    /// Run a noise-free, training-free evaluation episode every N episodes, and use it
+    /// to decide whether to save the best policy. Set to 0 to disable evaluation, which
+    /// falls back to checkpointing on the best training episode.
+    eval_every_n_episodes: i32,
+    #[export]
     critic_hidden_layers: Array<i64>,
     #[export]
     actor_hidden_layers: Array<i64>,
@@ -134,6 +141,15 @@ pub struct Agent {
     #[export]
     /// Exploration noise decay time constant in seconds.
     noise_decay: f32,
+    #[export]
+    /// Ornstein-Uhlenbeck mean-reversion rate, in units of 1/second. The noise
+    /// decorrelates over roughly `1 / noise_theta` seconds, which is what sets how
+    /// local the exploration is.
+    noise_theta: f32,
+    #[export]
+    /// Ornstein-Uhlenbeck volatility. Together with theta this fixes the noise
+    /// magnitude: the stationary standard deviation is `noise_sigma / sqrt(2 * noise_theta)`.
+    noise_sigma: f32,
 
     #[export_subgroup(name = "Target Networks")]
     #[export]
@@ -183,6 +199,7 @@ impl INode3D for Agent {
             noise_source: None,
             ou_noise: None,
             best_episode_reward: f32::NEG_INFINITY,
+            evaluating: false,
             noise_seed: 1,
             normalization: OnlineStateNormalization::new(),
             replay_buffer: None,
@@ -202,6 +219,7 @@ impl INode3D for Agent {
             // gives ~3.3 s.
             gamma: 0.99,
             max_episode_time: 10.0,
+            eval_every_n_episodes: 25,
             critic_hidden_layers: Array::from_iter(vec![128, 128]),
             actor_hidden_layers: Array::from_iter(vec![128, 128]),
 
@@ -211,6 +229,13 @@ impl INode3D for Agent {
             use_noise: true,
             noise_start: 0.4,
             noise_min: 0.05,
+            // The classic DDPG values (theta 0.15, sigma 0.2) assume dt = 1 per env
+            // step; this integrates in seconds at 30 Hz, so theta 0.15 would decorrelate
+            // over 6.7 s — longer than an episode, making the noise a constant bias
+            // rather than exploration. 4.5 restores the intended ~0.22 s, and sigma is
+            // raised to keep the same stationary magnitude (sigma / sqrt(2*theta)).
+            noise_theta: 4.5,
+            noise_sigma: 1.1,
             // Measured in sim seconds. Learning needs on the order of 10^5 steps
             // (~1 hour at 30 Hz), so decaying over ~2 minutes would leave almost the
             // entire run with no exploration.
@@ -296,7 +321,7 @@ impl INode3D for Agent {
 
         // Generate noise source and exploration process
         self.noise_source = Some(source::default(self.noise_seed as u64));
-        self.ou_noise = Some(OuNoise::new(0.15, 0.2));
+        self.ou_noise = Some(OuNoise::new(self.noise_theta, self.noise_sigma));
 
         self.replay_buffer = Some(ReplayBuffer::new(self.replay_buffer_capacity as usize));
 
@@ -342,7 +367,10 @@ impl INode3D for Agent {
                 next_state: state,
             });
 
-            if self.episode.steps % (self.train_every_n_frames as usize) == 0
+            // Hold the policy fixed across an evaluation episode, so its score measures
+            // one policy rather than a moving one.
+            if !self.evaluating
+                && self.episode.steps % (self.train_every_n_frames as usize) == 0
                 && replay_buffer.len() >= self.min_replay_size as usize
             {
                 if let Some((x, u, reward, x_next)) =
@@ -370,7 +398,7 @@ impl INode3D for Agent {
 
         let mut u = adhdp.act(x.clone());
         // Add temporally correlated exploration noise, decayed over training time.
-        if self.use_noise {
+        if self.use_noise && !self.evaluating {
             let scale = self.noise_min
                 + (self.noise_start - self.noise_min)
                     * (-self.total_training_time / self.noise_decay).exp();
@@ -414,7 +442,12 @@ impl Agent {
 
         // Save the best policy seen so far, so a later divergence can't destroy it.
         // (actor_best / critic_best in the run directory.)
-        if self.episode.accumulated_reward > self.best_episode_reward {
+        //
+        // Only episodes that were measured without exploration noise are eligible. A
+        // noisy episode's score says as much about the noise it happened to draw as it
+        // does about the policy, so comparing those would checkpoint lucky draws.
+        let eligible = self.evaluating || self.eval_every_n_episodes <= 0;
+        if eligible && self.episode.accumulated_reward > self.best_episode_reward {
             self.best_episode_reward = self.episode.accumulated_reward;
             adhdp.save(&self.run_directory, "best");
             // The weights are meaningless without the statistics used to normalize
@@ -423,6 +456,10 @@ impl Agent {
                 .save(&format!("{}normalization_best.bin", self.run_directory));
         }
 
+        // Decide whether the episode starting now is an evaluation episode.
+        self.evaluating = self.eval_every_n_episodes > 0
+            && self.episode_count % (self.eval_every_n_episodes as usize) == 0;
+
         // Restart the exploration process so each episode explores independently.
         if let Some(ou) = self.ou_noise.as_mut() {
             ou.reset();
@@ -430,6 +467,7 @@ impl Agent {
 
         self.previous_episode = Some(self.episode.clone());
         self.episode = Episode::new(self.episode_count);
+        self.episode.evaluation = self.evaluating;
         self.previous_step = None;
     }
 }

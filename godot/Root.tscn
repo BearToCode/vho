@@ -16,14 +16,14 @@ saved_critic_model = "E:\\Github\\vho-claude\\out\\latest\\critic_best.mpk"
 saved_critic_2_model = "E:\\Github\\vho-claude\\out\\latest\\critic2_best.mpk"
 saved_actor_model = "E:\\Github\\vho-claude\\out\\latest\\actor_best.mpk"
 saved_normalization_model = "E:\\Github\\vho-claude\\out\\latest\\normalization_best.bin"
-train_every_n_frames = 2
 max_episode_time = 4.999999999999985
 critic_hidden_layers = Array[int]([64, 64])
 actor_hidden_layers = Array[int]([64, 64])
 critic_learning_rate = 9.999999999999967e-05
-noise_start = 0.1999999999999994
+noise_start = 0.0999999999999997
 noise_min = 0.000999999999999997
 noise_decay = 2099.9999999999936
+min_replay_size = 10000
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_24d08")]
 transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 2.7574224, 0)
