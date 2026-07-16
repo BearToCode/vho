@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Dimension of the state input of the model.
-pub const STATE_DIM: usize = 11;
+pub const STATE_DIM: usize = 13;
 
 pub type AgentStateVector = SVector<f32, STATE_DIM>;
 
@@ -39,6 +39,10 @@ pub enum AgentStateComponent {
     PositionY,
     /// [m] Position error (current - initial) along global z.
     PositionZ,
+    /// [rad] Longitudinal flap angle.
+    LongitudinalFlapAngle,
+    /// [rad] Lateral flap angle.
+    LateralFlapAngle,
 }
 
 impl Index<AgentStateComponent> for AgentStateVector {
@@ -54,20 +58,13 @@ impl IndexMut<AgentStateComponent> for AgentStateVector {
     }
 }
 
-/// Settings for normalization of the state.
-pub struct StateNormalizationConfig {
-    pub angular_velocity_scale: f32,
-    pub linear_velocity_scale: f32,
-    pub angle_scale: f32,
-    pub position_scale: f32,
-}
-
 /// Get the (un-normalized) agent state vector.
 pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     // Get all necessary references
     let game_bind = game.bind();
 
     let helicopter = game_bind.helicopter.clone().unwrap();
+    let helicopter_bind = helicopter.bind();
 
     // Helicopter transform data
     let global_to_local = helicopter.get_transform().basis.inverse();
@@ -75,8 +72,7 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     let helicopter_rotation = helicopter.get_rotation();
 
     // Position error from the target hover point (the pose at scene start).
-    let position_error =
-        helicopter.get_global_position() - game_bind.helicopter_initial_position();
+    let position_error = helicopter.get_global_position() - game_bind.helicopter_initial_position();
 
     let helicopter_linear_velocity = helicopter.get_linear_velocity();
     let helicopter_angular_velocity = helicopter.get_angular_velocity();
@@ -98,37 +94,99 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     agent_state[Agent::PositionX] = position_error.x;
     agent_state[Agent::PositionY] = position_error.y;
     agent_state[Agent::PositionZ] = position_error.z;
+    agent_state[Agent::LongitudinalFlapAngle] = helicopter_bind.lon_flapping;
+    agent_state[Agent::LateralFlapAngle] = helicopter_bind.lat_flapping;
 
     return agent_state;
 }
 
-/// Get the normalized state for RL.
-pub fn normalize_state(
-    agent_state: &AgentStateVector,
-    config: &StateNormalizationConfig,
-) -> Tensor<Backend, 2> {
-    type Agent = AgentStateComponent;
+/// Running statistics for state normalization.
+#[derive(Debug, Copy, Clone)]
+struct OnlineStatistic {
+    count: f64,
+    mean: f64,
+    m2: f64, // sum of squared deviations
+}
 
-    let normalized = Tensor::<Backend, 1>::from_data(
-        [
-            agent_state[Agent::LinearVelocityX] * config.linear_velocity_scale,
-            agent_state[Agent::LinearVelocityY] * config.linear_velocity_scale,
-            agent_state[Agent::LinearVelocityZ] * config.linear_velocity_scale,
-            agent_state[Agent::AngularVelocityX] * config.angular_velocity_scale,
-            agent_state[Agent::AngularVelocityY] * config.angular_velocity_scale,
-            agent_state[Agent::AngularVelocityZ] * config.angular_velocity_scale,
-            agent_state[Agent::RotationAngleX] * config.angle_scale,
-            agent_state[Agent::RotationAngleZ] * config.angle_scale,
-            agent_state[Agent::PositionX] * config.position_scale,
-            agent_state[Agent::PositionY] * config.position_scale,
-            agent_state[Agent::PositionZ] * config.position_scale,
-        ],
-        &DEVICE,
-    )
-    .reshape([1, STATE_DIM]);
+impl OnlineStatistic {
+    fn update(&mut self, x: f64) {
+        self.count += 1.0;
+        let delta = x - self.mean;
+        self.mean += delta / self.count;
+        let delta2 = x - self.mean;
+        self.m2 += delta * delta2;
+    }
 
-    // godot_print!("State: {}", agent_state);
-    // godot_print!("Normalized: {}", normalized);
+    fn std(&self) -> f64 {
+        (self.m2 / self.count.max(1.0)).sqrt()
+    }
 
-    return normalized;
+    fn normalize(&self, x: f64) -> f64 {
+        (x - self.mean) / (self.std() + 1e-8)
+    }
+}
+
+pub struct OnlineStateNormalization {
+    stats: [OnlineStatistic; STATE_DIM],
+}
+
+impl OnlineStateNormalization {
+    pub fn new() -> Self {
+        Self {
+            stats: [OnlineStatistic {
+                count: 0.0,
+                mean: 0.0,
+                m2: 0.0,
+            }; STATE_DIM],
+        }
+    }
+
+    /// Update the running statistics with a new state vector.
+    pub fn update(&mut self, state: &AgentStateVector) {
+        for i in 0..STATE_DIM {
+            self.stats[i].update(state[i] as f64);
+        }
+    }
+
+    /// Normalize the state vector using the running statistics.
+    pub fn normalize(&self, state: &AgentStateVector) -> Tensor<Backend, 2> {
+        let mut normalized = AgentStateVector::zeros();
+        for i in 0..STATE_DIM {
+            normalized[i] = self.stats[i].normalize(state[i] as f64) as f32;
+        }
+
+        Tensor::<Backend, 1>::from_data(normalized.as_slice(), &DEVICE).reshape([1, STATE_DIM])
+    }
+
+    pub fn save(&self, output_path: &str) {
+        let mut serialized = Vec::with_capacity(STATE_DIM * 3);
+        for stat in &self.stats {
+            serialized.push(stat.mean as f32);
+            serialized.push(stat.std() as f32);
+            serialized.push(stat.count as f32);
+        }
+
+        let bytes: Vec<u8> = serialized
+            .iter()
+            .flat_map(|f| f.to_le_bytes().to_vec())
+            .collect();
+
+        std::fs::write(output_path, bytes).expect("Failed to write normalization model file");
+    }
+
+    pub fn load(&mut self, file_path: &str) {
+        let data = std::fs::read(file_path)
+            .expect("Failed to read normalization model file")
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect::<Vec<f32>>();
+
+        assert_eq!(data.len(), STATE_DIM * 3);
+
+        for i in 0..STATE_DIM {
+            self.stats[i].mean = data[i * 3] as f64;
+            self.stats[i].m2 = (data[i * 3 + 1] as f64).powi(2) * (data[i * 3 + 2] as f64);
+            self.stats[i].count = data[i * 3 + 2] as f64;
+        }
+    }
 }

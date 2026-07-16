@@ -1,24 +1,18 @@
-use burn::{
-    Tensor,
-    backend::{Autodiff, flex::Flex},
-};
+use burn::Tensor;
 use godot::prelude::*;
 use probability::source;
 
 use crate::{
     game::Game,
     rl::{
-        DEVICE,
-        action::{get_noise, perform_action},
+        Backend, DEVICE,
+        action::{OuNoise, perform_action},
         adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTrainData},
         episode::Episode,
         reward::stability_reward_function,
-        state::{StateNormalizationConfig, get_agent_state, normalize_state},
+        state::{OnlineStateNormalization, get_agent_state},
     },
 };
-
-/// The Burn backend to use. Flex is a lightweight Rust backend that runs on the CPU.
-type Backend = Autodiff<Flex>;
 
 struct StepData {
     x: Tensor<Backend, 2>,
@@ -48,8 +42,12 @@ pub struct Agent {
     run_directory: String,
     /// Noise source generator
     noise_source: Option<source::Default>,
-    /// Current noise level
-    noise_level: f32,
+    /// Ornstein-Uhlenbeck exploration process.
+    ou_noise: Option<OuNoise>,
+    /// Best episode reward seen so far (for saving the best policy).
+    best_episode_reward: f32,
+    /// Online normalization
+    normalization: OnlineStateNormalization,
 
     /* Exported to the inspector */
     #[export]
@@ -69,6 +67,10 @@ pub struct Agent {
     #[var(hint = FILE)]
     /// Saved actor model. Will load it if specified.
     saved_actor_model: GString,
+    #[export(file)]
+    #[var(hint = FILE)]
+    /// Saved state normalization model. Will load it if specified.
+    saved_normalization_model: GString,
 
     #[export_group(name = "Reinforcement Learning")]
     #[export]
@@ -103,8 +105,14 @@ pub struct Agent {
     /// Seed for the noise generator.
     noise_seed: i64,
     #[export]
-    /// Change between episodes reward lower which the noise is increased.
-    noise_update_threshold: f32,
+    /// Initial exploration noise scale (at training start).
+    noise_start: f32,
+    #[export]
+    /// Minimum exploration noise scale (floor after decay).
+    noise_min: f32,
+    #[export]
+    /// Exploration noise decay time constant in seconds.
+    noise_decay: f32,
 
     #[export_subgroup(name = "Target Networks")]
     #[export]
@@ -127,6 +135,9 @@ pub struct Agent {
     #[export]
     /// Position scale for state normalization.
     position_scale: f32,
+    #[export]
+    /// Flap angle scale for state normalization.
+    flap_angle_scale: f32,
 }
 
 #[godot_api]
@@ -144,8 +155,10 @@ impl INode3D for Agent {
             previous_step: None,
             run_directory: "".into(),
             noise_source: None,
-            noise_level: 0.0,
+            ou_noise: None,
+            best_episode_reward: f32::NEG_INFINITY,
             noise_seed: 1,
+            normalization: OnlineStateNormalization::new(),
 
             /* Exported to the inspector */
             game: None,
@@ -153,6 +166,7 @@ impl INode3D for Agent {
             output_directory: "".into(),
             saved_critic_model: "".into(),
             saved_actor_model: "".into(),
+            saved_normalization_model: "".into(),
 
             train_every_n_frames: 1,
             gamma: 0.95,
@@ -160,19 +174,22 @@ impl INode3D for Agent {
             critic_hidden_layers: Array::from_iter(vec![128, 128]),
             actor_hidden_layers: Array::from_iter(vec![128, 128]),
 
-            critic_learning_rate: 1e-3,
+            critic_learning_rate: 3e-4,
             actor_learning_rate: 1e-4,
 
             use_noise: true,
-            noise_update_threshold: 100.0,
+            noise_start: 0.4,
+            noise_min: 0.05,
+            noise_decay: 120.0,
 
             use_target_networks: true,
             tau: 0.005,
 
-            linear_velocity_scale: 1.0 / 50.0,
-            angular_velocity_scale: 2.0,
+            linear_velocity_scale: 1.0,
+            angular_velocity_scale: 1.0,
             angle_scale: 1.0,
-            position_scale: 1.0 / 100.0,
+            position_scale: 1.0,
+            flap_angle_scale: 1.0,
         }
     }
 
@@ -213,6 +230,11 @@ impl INode3D for Agent {
             adhdp.load_critic(&self.saved_critic_model.to_string());
         }
 
+        if !self.saved_normalization_model.is_empty() {
+            self.normalization
+                .load(&self.saved_normalization_model.to_string());
+        }
+
         // Determine run output directory
         self.run_directory = chrono::Local::now()
             .format(&format!(
@@ -229,8 +251,9 @@ impl INode3D for Agent {
             );
         }
 
-        // Generate noise source
+        // Generate noise source and exploration process
         self.noise_source = Some(source::default(self.noise_seed as u64));
+        self.ou_noise = Some(OuNoise::new(0.15, 0.2));
 
         self.adhdp = Some(adhdp);
     }
@@ -254,15 +277,18 @@ impl INode3D for Agent {
         let game_bind = game.bind();
         let helicopter = game_bind.helicopter.clone().unwrap();
 
-        let normalization_config = StateNormalizationConfig {
-            angle_scale: self.angle_scale,
-            linear_velocity_scale: self.linear_velocity_scale,
-            angular_velocity_scale: self.angular_velocity_scale,
-            position_scale: self.position_scale,
-        };
+        // let normalization_config = StateNormalizationConfig {
+        //     angle_scale: self.angle_scale,
+        //     linear_velocity_scale: self.linear_velocity_scale,
+        //     angular_velocity_scale: self.angular_velocity_scale,
+        //     position_scale: self.position_scale,
+        //     flap_angle_scale: self.flap_angle_scale,
+        // };
 
         let state = get_agent_state(game.clone());
-        let x = normalize_state(&state, &normalization_config);
+
+        self.normalization.update(&state);
+        let x = self.normalization.normalize(&state);
 
         if let Some(prev_step) = self.previous_step.as_ref() {
             let reward_value = stability_reward_function(&state);
@@ -286,14 +312,17 @@ impl INode3D for Agent {
         }
 
         let mut u = adhdp.act(x.clone());
-        // Add noise to the action if enabled
+        // Add temporally correlated exploration noise, decayed over training time.
         if self.use_noise {
-            self.episode.noise = self.noise_level;
+            let scale = self.noise_min
+                + (self.noise_start - self.noise_min)
+                    * (-self.total_training_time / self.noise_decay).exp();
+            self.episode.noise = scale;
 
-            if let Some(noise_source) = self.noise_source.as_mut()
-                && self.episode.noise > 0.0
+            if let (Some(ou), Some(noise_source)) =
+                (self.ou_noise.as_mut(), self.noise_source.as_mut())
             {
-                let noise = get_noise(self.episode.noise, noise_source);
+                let noise = ou.sample(delta, scale, noise_source);
                 u = u + noise;
             }
         }
@@ -316,18 +345,22 @@ impl Agent {
         self.episode_count += 1;
         if self.episode_count % 100 == 0 {
             adhdp.save(&self.run_directory, &self.episode_count.to_string());
+            self.normalization.save(&format!(
+                "{}normalization_{}.bin",
+                self.run_directory, self.episode_count
+            ));
         }
 
-        // Update the noise level based on the previous episode's reward
-        if let Some(prev_episode) = self.previous_episode.as_ref() {
-            let current_acc_reward = self.episode.accumulated_reward;
-            let prev_acc_reward = prev_episode.accumulated_reward;
-            let reward_diff = (current_acc_reward - prev_acc_reward).abs();
-            if reward_diff < self.noise_update_threshold {
-                self.noise_level = (self.noise_level + 0.01).min(1.0);
-            } else {
-                self.noise_level = (self.noise_level - 0.01).max(0.0);
-            }
+        // Save the best policy seen so far, so a later divergence can't destroy it.
+        // (actor_best / critic_best in the run directory.)
+        if self.episode.accumulated_reward > self.best_episode_reward {
+            self.best_episode_reward = self.episode.accumulated_reward;
+            adhdp.save(&self.run_directory, "best");
+        }
+
+        // Restart the exploration process so each episode explores independently.
+        if let Some(ou) = self.ou_noise.as_mut() {
+            ou.reset();
         }
 
         self.previous_episode = Some(self.episode.clone());

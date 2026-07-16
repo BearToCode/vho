@@ -7,8 +7,8 @@ pub struct Helicopter {
     base: Base<RigidBody3D>,
 
     // Flapping dynamics
-    lon_flapping: f32,
-    lat_flapping: f32,
+    pub lon_flapping: f32,
+    pub lat_flapping: f32,
 
     #[export_group(name = "Inputs")]
     #[export]
