@@ -10,7 +10,7 @@ use crate::{
         adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTrainData},
         episode::Episode,
         reward::stability_reward_function,
-        state::{OnlineStateNormalization, get_agent_state},
+        state::{StateNormalizationConfig, get_agent_state, normalize_state},
     },
 };
 
@@ -46,8 +46,6 @@ pub struct Agent {
     ou_noise: Option<OuNoise>,
     /// Best episode reward seen so far (for saving the best policy).
     best_episode_reward: f32,
-    /// Online normalization
-    normalization: OnlineStateNormalization,
 
     /* Exported to the inspector */
     #[export]
@@ -67,10 +65,6 @@ pub struct Agent {
     #[var(hint = FILE)]
     /// Saved actor model. Will load it if specified.
     saved_actor_model: GString,
-    #[export(file)]
-    #[var(hint = FILE)]
-    /// Saved state normalization model. Will load it if specified.
-    saved_normalization_model: GString,
 
     #[export_group(name = "Reinforcement Learning")]
     #[export]
@@ -158,7 +152,6 @@ impl INode3D for Agent {
             ou_noise: None,
             best_episode_reward: f32::NEG_INFINITY,
             noise_seed: 1,
-            normalization: OnlineStateNormalization::new(),
 
             /* Exported to the inspector */
             game: None,
@@ -166,7 +159,6 @@ impl INode3D for Agent {
             output_directory: "".into(),
             saved_critic_model: "".into(),
             saved_actor_model: "".into(),
-            saved_normalization_model: "".into(),
 
             train_every_n_frames: 1,
             gamma: 0.95,
@@ -230,11 +222,6 @@ impl INode3D for Agent {
             adhdp.load_critic(&self.saved_critic_model.to_string());
         }
 
-        if !self.saved_normalization_model.is_empty() {
-            self.normalization
-                .load(&self.saved_normalization_model.to_string());
-        }
-
         // Determine run output directory
         self.run_directory = chrono::Local::now()
             .format(&format!(
@@ -277,18 +264,17 @@ impl INode3D for Agent {
         let game_bind = game.bind();
         let helicopter = game_bind.helicopter.clone().unwrap();
 
-        // let normalization_config = StateNormalizationConfig {
-        //     angle_scale: self.angle_scale,
-        //     linear_velocity_scale: self.linear_velocity_scale,
-        //     angular_velocity_scale: self.angular_velocity_scale,
-        //     position_scale: self.position_scale,
-        //     flap_angle_scale: self.flap_angle_scale,
-        // };
-
         let state = get_agent_state(game.clone());
 
-        self.normalization.update(&state);
-        let x = self.normalization.normalize(&state);
+        let normalization_config = StateNormalizationConfig {
+            angular_velocity_scale: self.angular_velocity_scale,
+            linear_velocity_scale: self.linear_velocity_scale,
+            angle_scale: self.angle_scale,
+            position_scale: self.position_scale,
+            flap_angle_scale: self.flap_angle_scale,
+        };
+
+        let x = normalize_state(&state, &normalization_config);
 
         if let Some(prev_step) = self.previous_step.as_ref() {
             let reward_value = stability_reward_function(&state);
@@ -345,10 +331,6 @@ impl Agent {
         self.episode_count += 1;
         if self.episode_count % 100 == 0 {
             adhdp.save(&self.run_directory, &self.episode_count.to_string());
-            self.normalization.save(&format!(
-                "{}normalization_{}.bin",
-                self.run_directory, self.episode_count
-            ));
         }
 
         // Save the best policy seen so far, so a later divergence can't destroy it.

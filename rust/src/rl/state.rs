@@ -100,93 +100,44 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     return agent_state;
 }
 
-/// Running statistics for state normalization.
-#[derive(Debug, Copy, Clone)]
-struct OnlineStatistic {
-    count: f64,
-    mean: f64,
-    m2: f64, // sum of squared deviations
+/// Settings for normalization of the state.
+pub struct StateNormalizationConfig {
+    pub angular_velocity_scale: f32,
+    pub linear_velocity_scale: f32,
+    pub angle_scale: f32,
+    pub position_scale: f32,
+    pub flap_angle_scale: f32,
 }
 
-impl OnlineStatistic {
-    fn update(&mut self, x: f64) {
-        self.count += 1.0;
-        let delta = x - self.mean;
-        self.mean += delta / self.count;
-        let delta2 = x - self.mean;
-        self.m2 += delta * delta2;
-    }
+/// Get the normalized state for RL.
+pub fn normalize_state(
+    agent_state: &AgentStateVector,
+    config: &StateNormalizationConfig,
+) -> Tensor<Backend, 2> {
+    type Agent = AgentStateComponent;
 
-    fn std(&self) -> f64 {
-        (self.m2 / self.count.max(1.0)).sqrt()
-    }
+    let normalized = Tensor::<Backend, 1>::from_data(
+        [
+            agent_state[Agent::LinearVelocityX] * config.linear_velocity_scale,
+            agent_state[Agent::LinearVelocityY] * config.linear_velocity_scale,
+            agent_state[Agent::LinearVelocityZ] * config.linear_velocity_scale,
+            agent_state[Agent::AngularVelocityX] * config.angular_velocity_scale,
+            agent_state[Agent::AngularVelocityY] * config.angular_velocity_scale,
+            agent_state[Agent::AngularVelocityZ] * config.angular_velocity_scale,
+            agent_state[Agent::RotationAngleX] * config.angle_scale,
+            agent_state[Agent::RotationAngleZ] * config.angle_scale,
+            agent_state[Agent::PositionX] * config.position_scale,
+            agent_state[Agent::PositionY] * config.position_scale,
+            agent_state[Agent::PositionZ] * config.position_scale,
+            agent_state[Agent::LongitudinalFlapAngle] * config.flap_angle_scale,
+            agent_state[Agent::LateralFlapAngle] * config.flap_angle_scale,
+        ],
+        &DEVICE,
+    )
+    .reshape([1, STATE_DIM]);
 
-    fn normalize(&self, x: f64) -> f64 {
-        (x - self.mean) / (self.std() + 1e-8)
-    }
-}
+    // godot_print!("State: {}", agent_state);
+    // godot_print!("Normalized: {}", normalized);
 
-pub struct OnlineStateNormalization {
-    stats: [OnlineStatistic; STATE_DIM],
-}
-
-impl OnlineStateNormalization {
-    pub fn new() -> Self {
-        Self {
-            stats: [OnlineStatistic {
-                count: 0.0,
-                mean: 0.0,
-                m2: 0.0,
-            }; STATE_DIM],
-        }
-    }
-
-    /// Update the running statistics with a new state vector.
-    pub fn update(&mut self, state: &AgentStateVector) {
-        for i in 0..STATE_DIM {
-            self.stats[i].update(state[i] as f64);
-        }
-    }
-
-    /// Normalize the state vector using the running statistics.
-    pub fn normalize(&self, state: &AgentStateVector) -> Tensor<Backend, 2> {
-        let mut normalized = AgentStateVector::zeros();
-        for i in 0..STATE_DIM {
-            normalized[i] = self.stats[i].normalize(state[i] as f64) as f32;
-        }
-
-        Tensor::<Backend, 1>::from_data(normalized.as_slice(), &DEVICE).reshape([1, STATE_DIM])
-    }
-
-    pub fn save(&self, output_path: &str) {
-        let mut serialized = Vec::with_capacity(STATE_DIM * 3);
-        for stat in &self.stats {
-            serialized.push(stat.mean as f32);
-            serialized.push(stat.std() as f32);
-            serialized.push(stat.count as f32);
-        }
-
-        let bytes: Vec<u8> = serialized
-            .iter()
-            .flat_map(|f| f.to_le_bytes().to_vec())
-            .collect();
-
-        std::fs::write(output_path, bytes).expect("Failed to write normalization model file");
-    }
-
-    pub fn load(&mut self, file_path: &str) {
-        let data = std::fs::read(file_path)
-            .expect("Failed to read normalization model file")
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-            .collect::<Vec<f32>>();
-
-        assert_eq!(data.len(), STATE_DIM * 3);
-
-        for i in 0..STATE_DIM {
-            self.stats[i].mean = data[i * 3] as f64;
-            self.stats[i].m2 = (data[i * 3 + 1] as f64).powi(2) * (data[i * 3 + 2] as f64);
-            self.stats[i].count = data[i * 3 + 2] as f64;
-        }
-    }
+    return normalized;
 }

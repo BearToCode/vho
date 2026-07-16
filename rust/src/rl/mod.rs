@@ -6,9 +6,9 @@ mod networks;
 mod reward;
 mod state;
 
-use burn::backend::{Autodiff, Flex, flex::FlexDevice};
+use burn::backend::{Autodiff, Wgpu, wgpu::WgpuDevice};
 
-/// The Burn backend to use. Flex is a lightweight Rust backend that runs on the CPU.
-pub type Backend = Autodiff<Flex>;
+/// The Burn backend to use. Wgpu is a backend that runs on the GPU.
+pub type Backend = Autodiff<Wgpu>;
 
-pub const DEVICE: FlexDevice = FlexDevice;
+pub const DEVICE: WgpuDevice = WgpuDevice::DiscreteGpu(0);
