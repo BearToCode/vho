@@ -45,6 +45,11 @@ impl INode3D for Game {
 }
 
 impl Game {
+    /// The helicopter's pose at scene start, used as the target hover point.
+    pub fn helicopter_initial_position(&self) -> Vector3 {
+        self.helicopter_initial_position
+    }
+
     pub fn reset(&mut self) {
         let helicopter = self
             .helicopter

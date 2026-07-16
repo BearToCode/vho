@@ -56,7 +56,7 @@ impl Episode {
         };
 
         if !file_exists {
-            let header = "index,episode_time,steps,noise,action_scale,episode_reward,avg_critic_loss,avg_actor_loss\n";
+            let header = "index,episode_time,steps,noise,episode_reward,avg_critic_loss,avg_actor_loss\n";
             if let Err(e) = file.write_all(header.as_bytes()) {
                 godot_error!("Failed to write CSV header: {e}");
                 return;

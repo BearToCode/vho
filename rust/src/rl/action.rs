@@ -35,9 +35,7 @@ pub fn perform_action(u: Tensor<Backend, 2>, mut helicopter: Gd<Helicopter>) {
     helicopter_bind.tail_rotor_cyclic = control_normalized[3];
 }
 
-/// Ornstein-Uhlenbeck exploration noise. Temporally correlated noise explores
-/// integrated flight dynamics far better than per-step i.i.d. Gaussian noise, which
-/// tends to average out before it meaningfully perturbs the helicopter.
+/// Ornstein-Uhlenbeck exploration noise.
 pub struct OuNoise {
     /// Running per-action-dimension noise state.
     state: [f32; ACTION_DIM],
