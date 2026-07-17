@@ -164,8 +164,7 @@ impl ADHDP {
             .clone()
             .into_data()
             .to_vec::<f32>()
-            .expect("Failed to read actor loss")[0]
-            .abs();
+            .expect("Failed to read actor loss")[0];
 
         let grads = actor_loss.backward();
         let grads = GradientsParams::from_grads(grads, &self.actor);

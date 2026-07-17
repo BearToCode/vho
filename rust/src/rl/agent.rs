@@ -7,10 +7,10 @@ use crate::{
     rl::{
         Backend, DEVICE,
         action::{OuNoise, perform_action},
-        adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTrainData},
+        adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTerminalTrainData, ADHDPTrainData},
         episode::Episode,
         reward::stability_reward_function,
-        state::{StateNormalizationConfig, get_agent_state, normalize_state},
+        state::{StateNormalizationConfig, get_agent_state, is_tumbling, normalize_state},
     },
 };
 
@@ -118,11 +118,11 @@ pub struct Agent {
 
     #[export_subgroup(name = "State Normalization")]
     #[export]
-    /// Angular velocity scale for state normalization.
-    angular_velocity_scale: f32,
-    #[export]
     /// Linear velocity scale for state normalization.
     linear_velocity_scale: f32,
+    #[export]
+    /// Angular velocity scale for state normalization.
+    angular_velocity_scale: f32,
     #[export]
     /// Angle scale for state normalization.
     angle_scale: f32,
@@ -252,19 +252,40 @@ impl INode3D for Agent {
 
         let adhdp = self.adhdp.as_mut().unwrap();
 
-        if self.episode.time > self.max_episode_time {
-            self.episode.log(&self.run_directory);
-            godot_print!("{}", self.episode);
-            self.reset_episode();
-
-            return;
-        }
-
         let game = self.game.clone().unwrap();
         let game_bind = game.bind();
         let helicopter = game_bind.helicopter.clone().unwrap();
 
         let state = get_agent_state(game.clone());
+
+        if self.episode.time > self.max_episode_time || is_tumbling(&state) {
+            if is_tumbling(&state) {
+                // Perform one training step for the last state
+                if let Some(prev_step) = self.previous_step.as_ref() {
+                    let reward_value = -30.0; // Large negative reward for tumbling
+                    let reward =
+                        Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
+
+                    let losses = adhdp.train(ADHDPTrainData::Terminal(ADHDPTerminalTrainData {
+                        x: prev_step.x.clone(),
+                        u: prev_step.u.clone(),
+                        reward,
+                    }));
+
+                    self.episode.accumulated_reward += reward_value;
+                    self.episode.critic_loss_sum += losses.critic_loss;
+                    self.episode.actor_loss_sum += losses.actor_loss;
+                    self.episode.train_steps += 1;
+                }
+            }
+
+            self.episode.log(&self.run_directory);
+            godot_print!("{}", self.episode);
+            drop(game_bind);
+            self.reset_episode();
+
+            return;
+        }
 
         let normalization_config = StateNormalizationConfig {
             angular_velocity_scale: self.angular_velocity_scale,

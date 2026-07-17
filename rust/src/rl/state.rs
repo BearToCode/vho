@@ -116,21 +116,65 @@ pub fn normalize_state(
 ) -> Tensor<Backend, 2> {
     type Agent = AgentStateComponent;
 
+    let angle_to_minus_plus_pi = |angle: f32| -> f32 {
+        let mut angle = angle;
+        while angle > std::f32::consts::PI {
+            angle -= 2.0 * std::f32::consts::PI;
+        }
+        while angle < -std::f32::consts::PI {
+            angle += 2.0 * std::f32::consts::PI;
+        }
+        angle
+    };
+
+    let normalize =
+        |value: f32, scale: f32| -> f32 { (value * std::f32::consts::E / scale).tanh() };
+
     let normalized = Tensor::<Backend, 1>::from_data(
         [
-            agent_state[Agent::LinearVelocityX] * config.linear_velocity_scale,
-            agent_state[Agent::LinearVelocityY] * config.linear_velocity_scale,
-            agent_state[Agent::LinearVelocityZ] * config.linear_velocity_scale,
-            agent_state[Agent::AngularVelocityX] * config.angular_velocity_scale,
-            agent_state[Agent::AngularVelocityY] * config.angular_velocity_scale,
-            agent_state[Agent::AngularVelocityZ] * config.angular_velocity_scale,
-            agent_state[Agent::RotationAngleX] * config.angle_scale,
-            agent_state[Agent::RotationAngleZ] * config.angle_scale,
-            agent_state[Agent::PositionX] * config.position_scale,
-            agent_state[Agent::PositionY] * config.position_scale,
-            agent_state[Agent::PositionZ] * config.position_scale,
-            agent_state[Agent::LongitudinalFlapAngle] * config.flap_angle_scale,
-            agent_state[Agent::LateralFlapAngle] * config.flap_angle_scale,
+            normalize(
+                agent_state[Agent::LinearVelocityX],
+                config.linear_velocity_scale,
+            ),
+            normalize(
+                agent_state[Agent::LinearVelocityY],
+                config.linear_velocity_scale,
+            ),
+            normalize(
+                agent_state[Agent::LinearVelocityZ],
+                config.linear_velocity_scale,
+            ),
+            normalize(
+                agent_state[Agent::AngularVelocityX],
+                config.angular_velocity_scale,
+            ),
+            normalize(
+                agent_state[Agent::AngularVelocityY],
+                config.angular_velocity_scale,
+            ),
+            normalize(
+                agent_state[Agent::AngularVelocityZ],
+                config.angular_velocity_scale,
+            ),
+            normalize(
+                angle_to_minus_plus_pi(agent_state[Agent::RotationAngleX]),
+                config.angle_scale,
+            ),
+            normalize(
+                angle_to_minus_plus_pi(agent_state[Agent::RotationAngleZ]),
+                config.angle_scale,
+            ),
+            normalize(agent_state[Agent::PositionX], config.position_scale),
+            normalize(agent_state[Agent::PositionY], config.position_scale),
+            normalize(agent_state[Agent::PositionZ], config.position_scale),
+            normalize(
+                agent_state[Agent::LongitudinalFlapAngle],
+                config.flap_angle_scale,
+            ),
+            normalize(
+                agent_state[Agent::LateralFlapAngle],
+                config.flap_angle_scale,
+            ),
         ],
         &DEVICE,
     )
@@ -140,4 +184,25 @@ pub fn normalize_state(
     // godot_print!("Normalized: {}", normalized);
 
     return normalized;
+}
+
+pub fn is_tumbling(agent_state: &AgentStateVector) -> bool {
+    type Agent = AgentStateComponent;
+
+    let roll = agent_state[Agent::RotationAngleX];
+    let pitch = agent_state[Agent::RotationAngleZ];
+
+    let w_x = agent_state[Agent::AngularVelocityX];
+    let w_y = agent_state[Agent::AngularVelocityY];
+    let w_z = agent_state[Agent::AngularVelocityZ];
+
+    const ROLL_THRESHOLD: f32 = std::f32::consts::PI / 4.0; // rad
+    const PITCH_THRESHOLD: f32 = std::f32::consts::PI / 4.0; // rad
+    const ANGULAR_VELOCITY_THRESHOLD: f32 = 2.0 * std::f32::consts::PI; // rad/s
+
+    return roll.abs() > ROLL_THRESHOLD
+        || pitch.abs() > PITCH_THRESHOLD
+        || w_x.abs() > ANGULAR_VELOCITY_THRESHOLD
+        || w_y.abs() > ANGULAR_VELOCITY_THRESHOLD
+        || w_z.abs() > ANGULAR_VELOCITY_THRESHOLD;
 }

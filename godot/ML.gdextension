@@ -6,7 +6,8 @@ reloadable = true
 [libraries]
 linux.debug.x86_64 =     "res://../rust/target/debug/libvho.so"
 linux.release.x86_64 =   "res://../rust/target/release/libvho.so"
-windows.debug.x86_64 =   "res://../rust/target/debug/vho.dll"
+# windows.debug.x86_64 =   "res://../rust/target/debug/vho.dll"
+windows.debug.x86_64 =   "res://../rust/target/release/vho.dll"
 windows.release.x86_64 = "res://../rust/target/release/vho.dll"
 macos.debug =            "res://../rust/target/debug/libvho.dylib"
 macos.release =          "res://../rust/target/release/libvho.dylib"

@@ -60,5 +60,7 @@ impl Game {
         helicopter.set_linear_velocity(self.helicopter_initial_linear_velocity);
         helicopter.set_rotation(self.helicopter_initial_rotation);
         helicopter.set_angular_velocity(self.helicopter_initial_angular_velocity);
+        helicopter.bind_mut().lat_flapping = 0.0;
+        helicopter.bind_mut().lon_flapping = 0.0;
     }
 }

@@ -36,7 +36,6 @@ ui_alt_right={
 [physics]
 
 3d/run_on_separate_thread=true
-common/physics_ticks_per_second=30
 3d/physics_engine="Jolt Physics"
 jolt_physics_3d/limits/max_angular_velocity=17453292.519943297
 3d/default_linear_damp=0.0
