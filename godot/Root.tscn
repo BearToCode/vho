@@ -19,11 +19,11 @@ saved_normalization_model = "E:\\Github\\vho-claude\\out\\latest\\normalization_
 max_episode_time = 4.999999999999985
 critic_hidden_layers = Array[int]([64, 64])
 actor_hidden_layers = Array[int]([64, 64])
-critic_learning_rate = 9.999999999999967e-05
+critic_learning_rate = 9.999999999999968e-05
 noise_start = 0.0999999999999997
-noise_min = 0.000999999999999997
+noise_min = 0.00099999999999999
 noise_decay = 2099.9999999999936
-min_replay_size = 10000
+min_replay_size = 3000
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_24d08")]
 transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 2.7574224, 0)

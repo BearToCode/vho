@@ -428,8 +428,6 @@ impl Agent {
     #[func]
     fn reset_episode(&mut self) {
         let adhdp = self.adhdp.as_mut().unwrap();
-        let mut game = self.game.clone().unwrap();
-        game.bind_mut().reset();
 
         self.episode_count += 1;
         if self.episode_count % 100 == 0 {
@@ -456,9 +454,16 @@ impl Agent {
                 .save(&format!("{}normalization_best.bin", self.run_directory));
         }
 
-        // Decide whether the episode starting now is an evaluation episode.
+        // Decide whether the episode starting now is an evaluation episode. This has to
+        // happen before the reset, which needs the flag for the episode about to start
+        // rather than the one that just ended.
         self.evaluating = self.eval_every_n_episodes > 0
             && self.episode_count % (self.eval_every_n_episodes as usize) == 0;
+
+        // Evaluation episodes start from the nominal pose, so their reward stays
+        // comparable both across a run and against earlier runs.
+        let mut game = self.game.clone().unwrap();
+        game.bind_mut().reset(!self.evaluating);
 
         // Restart the exploration process so each episode explores independently.
         if let Some(ou) = self.ou_noise.as_mut() {
