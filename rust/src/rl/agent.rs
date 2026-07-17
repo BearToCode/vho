@@ -1,6 +1,6 @@
 use burn::Tensor;
 use godot::prelude::*;
-use probability::source;
+use probability::prelude::*;
 
 use crate::{
     game::Game,
@@ -68,6 +68,9 @@ pub struct Agent {
 
     #[export_group(name = "Reinforcement Learning")]
     #[export]
+    /// Enables training of the agent.
+    train: bool,
+    #[export]
     /// Trains the model every specified amount of physics frames.
     train_every_n_frames: i32,
     #[export(range = (0.0, 1.0, 0.001))]
@@ -90,6 +93,14 @@ pub struct Agent {
     #[var(hint = NONE)]
     /// Critic model learning rate.
     critic_learning_rate: f64,
+
+    #[export_subgroup(name = "Spawn Attitude")]
+    #[export]
+    /// Initial roll angle ranges of the helicopter in degrees.
+    initial_roll_range_deg: f32,
+    #[export]
+    /// Initial pitch angle ranges of the helicopter in degrees.
+    initial_pitch_range_deg: f32,
 
     #[export_subgroup(name = "Noise")]
     #[export]
@@ -160,6 +171,7 @@ impl INode3D for Agent {
             saved_critic_model: "".into(),
             saved_actor_model: "".into(),
 
+            train: true,
             train_every_n_frames: 1,
             gamma: 0.95,
             max_episode_time: 10.0,
@@ -168,6 +180,9 @@ impl INode3D for Agent {
 
             critic_learning_rate: 3e-4,
             actor_learning_rate: 1e-4,
+
+            initial_pitch_range_deg: 20.0,
+            initial_roll_range_deg: 20.0,
 
             use_noise: true,
             noise_start: 0.4,
@@ -265,17 +280,20 @@ impl INode3D for Agent {
                     let reward_value = -30.0; // Large negative reward for tumbling
                     let reward =
                         Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
-
-                    let losses = adhdp.train(ADHDPTrainData::Terminal(ADHDPTerminalTrainData {
-                        x: prev_step.x.clone(),
-                        u: prev_step.u.clone(),
-                        reward,
-                    }));
-
                     self.episode.accumulated_reward += reward_value;
-                    self.episode.critic_loss_sum += losses.critic_loss;
-                    self.episode.actor_loss_sum += losses.actor_loss;
-                    self.episode.train_steps += 1;
+
+                    if self.train {
+                        let losses =
+                            adhdp.train(ADHDPTrainData::Terminal(ADHDPTerminalTrainData {
+                                x: prev_step.x.clone(),
+                                u: prev_step.u.clone(),
+                                reward,
+                            }));
+
+                        self.episode.critic_loss_sum += losses.critic_loss;
+                        self.episode.actor_loss_sum += losses.actor_loss;
+                        self.episode.train_steps += 1;
+                    }
                 }
             }
 
@@ -302,7 +320,7 @@ impl INode3D for Agent {
             // godot_print!("Reward: {}", reward_value);
             let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
 
-            if self.episode.steps % (self.train_every_n_frames as usize) == 0 {
+            if self.episode.steps % (self.train_every_n_frames as usize) == 0 && self.train {
                 let losses = adhdp.train(ADHDPTrainData::Step(ADHDPStepTrainData {
                     x: prev_step.x.clone(),
                     u: prev_step.u.clone(),
@@ -347,7 +365,24 @@ impl Agent {
     fn reset_episode(&mut self) {
         let adhdp = self.adhdp.as_mut().unwrap();
         let mut game = self.game.clone().unwrap();
-        game.bind_mut().reset();
+
+        // Sample initial roll and pitch angles from uniform distributions within the specified ranges
+        let roll_range_rad = self.initial_roll_range_deg.to_radians();
+        let pitch_range_rad = self.initial_pitch_range_deg.to_radians();
+
+        let roll_distribution = Uniform::new(-roll_range_rad as f64, roll_range_rad as f64);
+        let pitch_distribution = Uniform::new(-pitch_range_rad as f64, pitch_range_rad as f64);
+
+        // Sample from distributions using the noise source directly.
+        // probability::prelude::Uniform provides a sample method that accepts a Source.
+        let noise_source = self.noise_source.as_mut().unwrap();
+
+        let roll = roll_distribution.sample(noise_source) as f32;
+        let pitch = pitch_distribution.sample(noise_source) as f32;
+
+        let helicopter_rotation = Vector3::new(roll, 0.0, pitch);
+
+        game.bind_mut().reset(helicopter_rotation);
 
         self.episode_count += 1;
         if self.episode_count % 100 == 0 {

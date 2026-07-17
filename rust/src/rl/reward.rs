@@ -17,7 +17,7 @@ pub fn stability_reward_function(state: &AgentStateVector) -> f32 {
     let v = (v_x.powi(2) + v_y.powi(2) + v_z.powi(2)).sqrt();
 
     // let p_x = state[Agent::PositionX];
-    // let p_y = state[Agent::PositionY];
+    let p_y = state[Agent::PositionY];
     // let p_z = state[Agent::PositionZ];
 
     // At the range value, reward is around 1% of the maximum
@@ -25,6 +25,7 @@ pub fn stability_reward_function(state: &AgentStateVector) -> f32 {
     const PITCH_RANGE: f32 = std::f32::consts::PI / 8.0; // rad
     const ANGULAR_VELOCITY_RANGE: f32 = 0.3 * std::f32::consts::PI; // rad/s
     const LINEAR_VELOCITY_RANGE: f32 = 3.0; // m/s
+    const ALTITUDE_RANGE: f32 = 4.0; // m
 
     // For now, only consider velocity and orientation
     let compute_reward = |value: f32, range: f32| -> f32 {
@@ -33,8 +34,9 @@ pub fn stability_reward_function(state: &AgentStateVector) -> f32 {
 
     let roll_reward = compute_reward(roll, ROLL_RANGE);
     let pitch_reward = compute_reward(pitch, PITCH_RANGE);
-    let angular_velocity_reward = 3.0 * compute_reward(w, ANGULAR_VELOCITY_RANGE);
+    let angular_velocity_reward = compute_reward(w, ANGULAR_VELOCITY_RANGE);
     let linear_velocity_reward = compute_reward(v, LINEAR_VELOCITY_RANGE);
+    let altitude_reward = compute_reward(p_y, ALTITUDE_RANGE);
 
     // godot_print!(
     //     "roll_reward: {}, pitch_reward: {}, angular_velocity_reward: {}, linear_velocity_reward: {}",
@@ -44,7 +46,11 @@ pub fn stability_reward_function(state: &AgentStateVector) -> f32 {
     //     linear_velocity_reward
     // );
 
-    let reward = roll_reward + pitch_reward + angular_velocity_reward + linear_velocity_reward;
+    let reward = roll_reward
+        * pitch_reward
+        * angular_velocity_reward
+        * linear_velocity_reward
+        * altitude_reward;
 
     reward
 }

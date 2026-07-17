@@ -196,13 +196,17 @@ pub fn is_tumbling(agent_state: &AgentStateVector) -> bool {
     let w_y = agent_state[Agent::AngularVelocityY];
     let w_z = agent_state[Agent::AngularVelocityZ];
 
+    let p_y = agent_state[Agent::PositionY];
+
     const ROLL_THRESHOLD: f32 = std::f32::consts::PI / 4.0; // rad
     const PITCH_THRESHOLD: f32 = std::f32::consts::PI / 4.0; // rad
     const ANGULAR_VELOCITY_THRESHOLD: f32 = 2.0 * std::f32::consts::PI; // rad/s
+    const ALTITUDE_THRESHOLD: f32 = 50.0; // m
 
     return roll.abs() > ROLL_THRESHOLD
         || pitch.abs() > PITCH_THRESHOLD
         || w_x.abs() > ANGULAR_VELOCITY_THRESHOLD
         || w_y.abs() > ANGULAR_VELOCITY_THRESHOLD
-        || w_z.abs() > ANGULAR_VELOCITY_THRESHOLD;
+        || w_z.abs() > ANGULAR_VELOCITY_THRESHOLD
+        || p_y.abs() > ALTITUDE_THRESHOLD;
 }

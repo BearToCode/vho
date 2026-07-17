@@ -8,7 +8,6 @@ pub struct Game {
     base: Base<Node3D>,
 
     helicopter_initial_position: Vector3,
-    helicopter_initial_rotation: Vector3,
     helicopter_initial_linear_velocity: Vector3,
     helicopter_initial_angular_velocity: Vector3,
 
@@ -23,7 +22,6 @@ impl INode3D for Game {
             base,
 
             helicopter_initial_position: Vector3::ZERO,
-            helicopter_initial_rotation: Vector3::ZERO,
             helicopter_initial_linear_velocity: Vector3::ZERO,
             helicopter_initial_angular_velocity: Vector3::ZERO,
 
@@ -38,7 +36,6 @@ impl INode3D for Game {
             .expect("Game is missing the helicopter");
 
         self.helicopter_initial_position = helicopter.get_global_position();
-        self.helicopter_initial_rotation = helicopter.get_global_rotation();
         self.helicopter_initial_linear_velocity = helicopter.get_linear_velocity();
         self.helicopter_initial_angular_velocity = helicopter.get_angular_velocity();
     }
@@ -50,7 +47,7 @@ impl Game {
         self.helicopter_initial_position
     }
 
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, helicopter_rotation: Vector3) {
         let helicopter = self
             .helicopter
             .as_mut()
@@ -58,7 +55,7 @@ impl Game {
 
         helicopter.set_position(self.helicopter_initial_position);
         helicopter.set_linear_velocity(self.helicopter_initial_linear_velocity);
-        helicopter.set_rotation(self.helicopter_initial_rotation);
+        helicopter.set_rotation(helicopter_rotation);
         helicopter.set_angular_velocity(self.helicopter_initial_angular_velocity);
         helicopter.bind_mut().lat_flapping = 0.0;
         helicopter.bind_mut().lon_flapping = 0.0;
