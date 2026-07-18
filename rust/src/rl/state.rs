@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Dimension of the state input of the model.
-pub const STATE_DIM: usize = 13;
+pub const STATE_DIM: usize = 10;
 
 pub type AgentStateVector = SVector<f32, STATE_DIM>;
 
@@ -33,12 +33,6 @@ pub enum AgentStateComponent {
     RotationAngleX,
     /// [rad/s] Helicopter pitch angle.
     RotationAngleZ,
-    /// [m] Position error (current - initial) along global x.
-    PositionX,
-    /// [m] Position error (current - initial) along global y.
-    PositionY,
-    /// [m] Position error (current - initial) along global z.
-    PositionZ,
     /// [rad] Longitudinal flap angle.
     LongitudinalFlapAngle,
     /// [rad] Lateral flap angle.
@@ -71,9 +65,6 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
 
     let helicopter_rotation = helicopter.get_rotation();
 
-    // Position error from the target hover point (the pose at scene start).
-    let position_error = helicopter.get_global_position() - game_bind.helicopter_initial_position();
-
     let helicopter_linear_velocity = helicopter.get_linear_velocity();
     let helicopter_angular_velocity = helicopter.get_angular_velocity();
 
@@ -91,9 +82,6 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     agent_state[Agent::AngularVelocityZ] = helicopter_local_angular_velocity.z;
     agent_state[Agent::RotationAngleX] = helicopter_rotation.x;
     agent_state[Agent::RotationAngleZ] = helicopter_rotation.z;
-    agent_state[Agent::PositionX] = position_error.x;
-    agent_state[Agent::PositionY] = position_error.y;
-    agent_state[Agent::PositionZ] = position_error.z;
     agent_state[Agent::LongitudinalFlapAngle] = helicopter_bind.lon_flapping;
     agent_state[Agent::LateralFlapAngle] = helicopter_bind.lat_flapping;
 
@@ -105,7 +93,6 @@ pub struct StateNormalizationConfig {
     pub angular_velocity_scale: f32,
     pub linear_velocity_scale: f32,
     pub angle_scale: f32,
-    pub position_scale: f32,
     pub flap_angle_scale: f32,
 }
 
@@ -164,9 +151,6 @@ pub fn normalize_state(
                 angle_to_minus_plus_pi(agent_state[Agent::RotationAngleZ]),
                 config.angle_scale,
             ),
-            normalize(agent_state[Agent::PositionX], config.position_scale),
-            normalize(agent_state[Agent::PositionY], config.position_scale),
-            normalize(agent_state[Agent::PositionZ], config.position_scale),
             normalize(
                 agent_state[Agent::LongitudinalFlapAngle],
                 config.flap_angle_scale,
@@ -196,17 +180,13 @@ pub fn is_tumbling(agent_state: &AgentStateVector) -> bool {
     let w_y = agent_state[Agent::AngularVelocityY];
     let w_z = agent_state[Agent::AngularVelocityZ];
 
-    let p_y = agent_state[Agent::PositionY];
-
-    const ROLL_THRESHOLD: f32 = std::f32::consts::PI / 4.0; // rad
-    const PITCH_THRESHOLD: f32 = std::f32::consts::PI / 4.0; // rad
+    const ROLL_THRESHOLD: f32 = std::f32::consts::PI / 3.0; // rad
+    const PITCH_THRESHOLD: f32 = std::f32::consts::PI / 3.0; // rad
     const ANGULAR_VELOCITY_THRESHOLD: f32 = 2.0 * std::f32::consts::PI; // rad/s
-    const ALTITUDE_THRESHOLD: f32 = 50.0; // m
 
     return roll.abs() > ROLL_THRESHOLD
         || pitch.abs() > PITCH_THRESHOLD
         || w_x.abs() > ANGULAR_VELOCITY_THRESHOLD
         || w_y.abs() > ANGULAR_VELOCITY_THRESHOLD
-        || w_z.abs() > ANGULAR_VELOCITY_THRESHOLD
-        || p_y.abs() > ALTITUDE_THRESHOLD;
+        || w_z.abs() > ANGULAR_VELOCITY_THRESHOLD;
 }

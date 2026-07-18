@@ -9,7 +9,7 @@ use crate::{
         action::{OuNoise, perform_action},
         adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTerminalTrainData, ADHDPTrainData},
         episode::Episode,
-        reward::stability_reward_function,
+        reward::{RewardConfig, stability_reward_function},
         state::{StateNormalizationConfig, get_agent_state, is_tumbling, normalize_state},
     },
 };
@@ -101,6 +101,26 @@ pub struct Agent {
     #[export]
     /// Initial pitch angle ranges of the helicopter in degrees.
     initial_pitch_range_deg: f32,
+    #[export]
+    /// Initial linear velocity ranges of the helicopter in meters per second.
+    initial_linear_velocity_range: f32,
+    #[export]
+    /// Initial angular velocity ranges of the helicopter in degrees per second.
+    initial_angular_velocity_range_deg: f32,
+
+    #[export_subgroup(name = "Reward")]
+    #[export]
+    /// Roll range for reward calculation.
+    roll_range_deg: f32,
+    #[export]
+    /// Pitch range for reward calculation.
+    pitch_range_deg: f32,
+    #[export]
+    /// Angular velocity range for reward calculation.
+    angular_velocity_range_deg: f32,
+    #[export]
+    /// Linear velocity range for reward calculation.
+    linear_velocity_range: f32,
 
     #[export_subgroup(name = "Noise")]
     #[export]
@@ -137,9 +157,6 @@ pub struct Agent {
     #[export]
     /// Angle scale for state normalization.
     angle_scale: f32,
-    #[export]
-    /// Position scale for state normalization.
-    position_scale: f32,
     #[export]
     /// Flap angle scale for state normalization.
     flap_angle_scale: f32,
@@ -183,6 +200,13 @@ impl INode3D for Agent {
 
             initial_pitch_range_deg: 20.0,
             initial_roll_range_deg: 20.0,
+            initial_linear_velocity_range: 1.0,
+            initial_angular_velocity_range_deg: 10.0,
+
+            roll_range_deg: 45.0,
+            pitch_range_deg: 45.0,
+            angular_velocity_range_deg: 45.0,
+            linear_velocity_range: 2.0,
 
             use_noise: true,
             noise_start: 0.4,
@@ -195,7 +219,6 @@ impl INode3D for Agent {
             linear_velocity_scale: 1.0,
             angular_velocity_scale: 1.0,
             angle_scale: 1.0,
-            position_scale: 1.0,
             flap_angle_scale: 1.0,
         }
     }
@@ -277,7 +300,8 @@ impl INode3D for Agent {
             if is_tumbling(&state) {
                 // Perform one training step for the last state
                 if let Some(prev_step) = self.previous_step.as_ref() {
-                    let reward_value = -30.0; // Large negative reward for tumbling
+                    let time_left = self.max_episode_time - self.episode.time;
+                    let reward_value = -time_left; // Penalize for tumbling, scaled by time left
                     let reward =
                         Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
                     self.episode.accumulated_reward += reward_value;
@@ -309,14 +333,20 @@ impl INode3D for Agent {
             angular_velocity_scale: self.angular_velocity_scale,
             linear_velocity_scale: self.linear_velocity_scale,
             angle_scale: self.angle_scale,
-            position_scale: self.position_scale,
             flap_angle_scale: self.flap_angle_scale,
         };
 
         let x = normalize_state(&state, &normalization_config);
 
         if let Some(prev_step) = self.previous_step.as_ref() {
-            let reward_value = stability_reward_function(&state);
+            let reward_config = RewardConfig {
+                roll_range: self.roll_range_deg.to_radians(),
+                pitch_range: self.pitch_range_deg.to_radians(),
+                angular_velocity_range: self.angular_velocity_range_deg.to_radians(),
+                linear_velocity_range: self.linear_velocity_range,
+            };
+
+            let reward_value = stability_reward_function(&state, &reward_config);
             // godot_print!("Reward: {}", reward_value);
             let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
 
@@ -363,26 +393,16 @@ impl Agent {
     /// Reset the episode.
     #[func]
     fn reset_episode(&mut self) {
+        let (helicopter_rotation, helicopter_linear_velocity, helicopter_angular_velocity) =
+            self.get_helicopter_starting_state();
+
         let adhdp = self.adhdp.as_mut().unwrap();
         let mut game = self.game.clone().unwrap();
-
-        // Sample initial roll and pitch angles from uniform distributions within the specified ranges
-        let roll_range_rad = self.initial_roll_range_deg.to_radians();
-        let pitch_range_rad = self.initial_pitch_range_deg.to_radians();
-
-        let roll_distribution = Uniform::new(-roll_range_rad as f64, roll_range_rad as f64);
-        let pitch_distribution = Uniform::new(-pitch_range_rad as f64, pitch_range_rad as f64);
-
-        // Sample from distributions using the noise source directly.
-        // probability::prelude::Uniform provides a sample method that accepts a Source.
-        let noise_source = self.noise_source.as_mut().unwrap();
-
-        let roll = roll_distribution.sample(noise_source) as f32;
-        let pitch = pitch_distribution.sample(noise_source) as f32;
-
-        let helicopter_rotation = Vector3::new(roll, 0.0, pitch);
-
-        game.bind_mut().reset(helicopter_rotation);
+        game.bind_mut().reset(
+            helicopter_rotation,
+            helicopter_linear_velocity,
+            helicopter_angular_velocity,
+        );
 
         self.episode_count += 1;
         if self.episode_count % 100 == 0 {
@@ -404,5 +424,42 @@ impl Agent {
         self.previous_episode = Some(self.episode.clone());
         self.episode = Episode::new(self.episode_count);
         self.previous_step = None;
+    }
+
+    fn get_helicopter_starting_state(&mut self) -> (Vector3, Vector3, Vector3) {
+        // Sample initial ranges from uniform distributions within the specified ranges
+        let roll_range_rad = self.initial_roll_range_deg.to_radians();
+        let pitch_range_rad = self.initial_pitch_range_deg.to_radians();
+        let linear_velocity_range = self.initial_linear_velocity_range;
+        let angular_velocity_range_rad = self.initial_angular_velocity_range_deg.to_radians();
+
+        let roll_distribution = Uniform::new(-roll_range_rad as f64, roll_range_rad as f64);
+        let pitch_distribution = Uniform::new(-pitch_range_rad as f64, pitch_range_rad as f64);
+        let linear_velocity_distribution =
+            Uniform::new(-linear_velocity_range as f64, linear_velocity_range as f64);
+        let angular_velocity_distribution = Uniform::new(
+            -angular_velocity_range_rad as f64,
+            angular_velocity_range_rad as f64,
+        );
+
+        // Sample from distributions using the noise source directly.
+        // probability::prelude::Uniform provides a sample method that accepts a Source.
+        let noise_source = self.noise_source.as_mut().unwrap();
+
+        let roll = roll_distribution.sample(noise_source) as f32;
+        let pitch = pitch_distribution.sample(noise_source) as f32;
+        let linear_velocity_x = linear_velocity_distribution.sample(noise_source) as f32;
+        let linear_velocity_y = linear_velocity_distribution.sample(noise_source) as f32;
+        let linear_velocity_z = linear_velocity_distribution.sample(noise_source) as f32;
+        let angular_velocity_x = angular_velocity_distribution.sample(noise_source) as f32;
+        let angular_velocity_y = angular_velocity_distribution.sample(noise_source) as f32;
+        let angular_velocity_z = angular_velocity_distribution.sample(noise_source) as f32;
+
+        let rotation = Vector3::new(roll, 0.0, pitch);
+        let linear_velocity = Vector3::new(linear_velocity_x, linear_velocity_y, linear_velocity_z);
+        let angular_velocity =
+            Vector3::new(angular_velocity_x, angular_velocity_y, angular_velocity_z);
+
+        (rotation, linear_velocity, angular_velocity)
     }
 }
