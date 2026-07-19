@@ -1,4 +1,5 @@
 use burn::Tensor;
+use godot::classes::Engine;
 use godot::prelude::*;
 use probability::source;
 
@@ -7,10 +8,10 @@ use crate::{
     rl::{
         Backend,
         action::{ACTION_DIM, OuNoise, perform_action},
-        adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTrainData},
+        adhdp::{ADHDP, ADHDPConfig},
         episode::Episode,
         replay_buffer::{ReplayBuffer, Transition},
-        reward::stability_reward_function,
+        reward::{RewardConfig, is_failure, stability_reward_function},
         state::{AgentStateVector, OnlineStateNormalization, get_agent_state},
     },
 };
@@ -111,6 +112,12 @@ pub struct Agent {
     /// falls back to checkpointing on the best training episode.
     eval_every_n_episodes: i32,
     #[export]
+    /// How much faster than real time to run, which is purely a throughput knob: Godot
+    /// steps physics by `time_scale / physics_ticks_per_second`, so raising both together
+    /// leaves the timestep -- and therefore the dynamics -- unchanged. Raising this alone
+    /// would enlarge the timestep and break the integration instead.
+    time_scale: f64,
+    #[export]
     critic_hidden_layers: Array<i64>,
     #[export]
     actor_hidden_layers: Array<i64>,
@@ -180,6 +187,26 @@ pub struct Agent {
     #[export]
     /// Minimum number of transitions collected before training starts.
     min_replay_size: i32,
+
+    #[export_subgroup(name = "Reward")]
+    #[export]
+    /// Reward granted every step the helicopter has not failed. Must exceed the typical
+    /// penalty of a decent policy, or failing immediately would score better than flying.
+    alive_bonus: f32,
+    #[export]
+    /// Weight on the angular velocity penalty.
+    angular_velocity_weight: f32,
+    #[export]
+    /// Weight on the position error penalty.
+    position_weight: f32,
+
+    #[export_subgroup(name = "Termination")]
+    #[export]
+    /// Position error past which the episode has failed, in meters. 0 disables.
+    max_position_error: f32,
+    #[export]
+    /// Roll or pitch past which the episode has failed, in radians. 0 disables.
+    max_tilt: f32,
 }
 
 #[godot_api]
@@ -220,6 +247,7 @@ impl INode3D for Agent {
             gamma: 0.99,
             max_episode_time: 10.0,
             eval_every_n_episodes: 25,
+            time_scale: 1.0,
             critic_hidden_layers: Array::from_iter(vec![128, 128]),
             actor_hidden_layers: Array::from_iter(vec![128, 128]),
 
@@ -251,6 +279,15 @@ impl INode3D for Agent {
             replay_buffer_capacity: 100_000,
             batch_size: 128,
             min_replay_size: 1000,
+
+            // A decent policy penalises around 0.25/step, so 1.0 leaves clear headroom
+            // for surviving to beat failing.
+            alive_bonus: 1.0,
+            angular_velocity_weight: 1.0,
+            position_weight: 0.1,
+
+            max_position_error: 8.0,
+            max_tilt: 1.0,
         }
     }
 
@@ -325,6 +362,8 @@ impl INode3D for Agent {
 
         self.replay_buffer = Some(ReplayBuffer::new(self.replay_buffer_capacity as usize));
 
+        Engine::singleton().set_time_scale(self.time_scale);
+
         self.adhdp = Some(adhdp);
     }
 
@@ -344,16 +383,26 @@ impl INode3D for Agent {
         }
 
         let game = self.game.clone().unwrap();
-        let game_bind = game.bind();
-        let helicopter = game_bind.helicopter.clone().unwrap();
+        // Release the bind immediately: `reset_episode` needs `bind_mut` on the same
+        // object, and holding this across it panics gdext's runtime borrow check.
+        let helicopter = game.bind().helicopter.clone().unwrap();
 
         let state = get_agent_state(game.clone());
 
         self.normalization.update(&state);
         let x = self.normalization.normalize(&state);
 
+        let reward_config = RewardConfig {
+            alive_bonus: self.alive_bonus,
+            angular_velocity_weight: self.angular_velocity_weight,
+            position_weight: self.position_weight,
+            max_position_error: self.max_position_error,
+            max_tilt: self.max_tilt,
+        };
+        let failed = is_failure(&state, &reward_config);
+
         if let Some(prev_step) = self.previous_step.as_ref() {
-            let reward_value = stability_reward_function(&state);
+            let reward_value = stability_reward_function(&state, &reward_config);
             // godot_print!("Reward: {}", reward_value);
 
             // Store raw states: normalization statistics keep drifting, so a state
@@ -365,6 +414,7 @@ impl INode3D for Agent {
                 action: prev_step.u,
                 reward: reward_value,
                 next_state: state,
+                terminal: failed,
             });
 
             // Hold the policy fixed across an evaluation episode, so its score measures
@@ -373,15 +423,10 @@ impl INode3D for Agent {
                 && self.episode.steps % (self.train_every_n_frames as usize) == 0
                 && replay_buffer.len() >= self.min_replay_size as usize
             {
-                if let Some((x, u, reward, x_next)) =
+                if let Some(batch) =
                     replay_buffer.sample(self.batch_size as usize, &self.normalization)
                 {
-                    let losses = adhdp.train(ADHDPTrainData::Step(ADHDPStepTrainData {
-                        x,
-                        u,
-                        reward,
-                        x_next,
-                    }));
+                    let losses = adhdp.train(batch);
 
                     self.episode.critic_loss_sum += losses.critic_loss;
                     self.episode.train_steps += 1;
@@ -394,6 +439,17 @@ impl INode3D for Agent {
             }
 
             self.episode.accumulated_reward += reward_value;
+        }
+
+        // End the episode on failure, but only after the transition that reached it has
+        // been stored: that transition, with its bootstrap masked out, is the entire
+        // mechanism by which the agent learns that failing is bad.
+        if failed {
+            self.episode.log(&self.run_directory);
+            godot_print!("{}", self.episode);
+            self.reset_episode();
+
+            return;
         }
 
         let mut u = adhdp.act(x.clone());

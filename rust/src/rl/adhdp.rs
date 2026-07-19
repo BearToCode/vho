@@ -48,25 +48,14 @@ pub struct ADHDPLosses {
     pub actor_loss: Option<f32>,
 }
 
-pub struct ADHDPTerminalTrainData {
-    pub x: Tensor<Backend, 2>,
-    pub u: Tensor<Backend, 2>,
-    pub reward: Tensor<Backend, 2>,
-}
-
-pub struct ADHDPStepTrainData {
+pub struct ADHDPTrainData {
     pub x: Tensor<Backend, 2>,
     pub u: Tensor<Backend, 2>,
     pub reward: Tensor<Backend, 2>,
     pub x_next: Tensor<Backend, 2>,
-}
-
-#[allow(dead_code)]
-pub enum ADHDPTrainData {
-    #[allow(dead_code)]
-    Step(ADHDPStepTrainData),
-    #[allow(dead_code)]
-    Terminal(ADHDPTerminalTrainData),
+    /// 1.0 for transitions that ended in a failure, 0.0 otherwise. A batch mixes both,
+    /// so this is a mask rather than a separate code path.
+    pub done: Tensor<Backend, 2>,
 }
 
 /// Read a scalar loss tensor back to the CPU.
@@ -168,42 +157,50 @@ impl ADHDP {
         self.train_steps += 1;
 
         // 1. Build the Bellman target.
-        let (x, u, target) = match data {
-            ADHDPTrainData::Step(step) => {
-                let (target_actor, target_critic_1, target_critic_2) =
-                    if self.config.use_target_networks {
-                        (
-                            &self.target_actor,
-                            &self.target_critic_1,
-                            &self.target_critic_2,
-                        )
-                    } else {
-                        (&self.actor, &self.critic_1, &self.critic_2)
-                    };
+        let ADHDPTrainData {
+            x,
+            u,
+            reward,
+            x_next,
+            done,
+        } = data;
 
-                // Target policy smoothing.
-                let mut u_next = target_actor.forward(step.x_next.clone());
-                if self.config.target_noise_std > 0.0 {
-                    let noise = u_next
-                        .random_like(Distribution::Normal(
-                            0.0,
-                            self.config.target_noise_std as f64,
-                        ))
-                        .clamp(-self.config.target_noise_clip, self.config.target_noise_clip);
-                    u_next = u_next + noise;
-                }
-                let u_next = u_next.clamp(-1.0, 1.0).detach();
+        let target = {
+            let (target_actor, target_critic_1, target_critic_2) =
+                if self.config.use_target_networks {
+                    (
+                        &self.target_actor,
+                        &self.target_critic_1,
+                        &self.target_critic_2,
+                    )
+                } else {
+                    (&self.actor, &self.critic_1, &self.critic_2)
+                };
 
-                // Clipped double-Q: take the more pessimistic of the two estimates.
-                let j_1 = target_critic_1.forward(step.x_next.clone(), u_next.clone());
-                let j_2 = target_critic_2.forward(step.x_next, u_next);
-                let j_next = j_1.min_pair(j_2).detach();
-
-                let target = step.reward + j_next.mul_scalar(self.config.gamma);
-
-                (step.x, step.u, target)
+            // Target policy smoothing.
+            let mut u_next = target_actor.forward(x_next.clone());
+            if self.config.target_noise_std > 0.0 {
+                let noise = u_next
+                    .random_like(Distribution::Normal(
+                        0.0,
+                        self.config.target_noise_std as f64,
+                    ))
+                    .clamp(-self.config.target_noise_clip, self.config.target_noise_clip);
+                u_next = u_next + noise;
             }
-            ADHDPTrainData::Terminal(terminal) => (terminal.x, terminal.u, terminal.reward),
+            let u_next = u_next.clamp(-1.0, 1.0).detach();
+
+            // Clipped double-Q: take the more pessimistic of the two estimates.
+            let j_1 = target_critic_1.forward(x_next.clone(), u_next.clone());
+            let j_2 = target_critic_2.forward(x_next, u_next);
+            let j_next = j_1.min_pair(j_2).detach();
+
+            // A failure has no future, so its bootstrap is masked out. Without this the
+            // critic would value crashing as though the episode had carried on, and the
+            // terminal would teach the agent nothing.
+            let not_done = done.neg().add_scalar(1.0);
+
+            reward + j_next.mul_scalar(self.config.gamma).mul(not_done)
         };
 
         // 2. Update both critics against that same target.

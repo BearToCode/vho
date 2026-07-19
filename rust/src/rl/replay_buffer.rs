@@ -4,6 +4,7 @@ use rand::seq::index::sample;
 use crate::rl::{
     Backend, DEVICE,
     action::ACTION_DIM,
+    adhdp::ADHDPTrainData,
     state::{AgentStateVector, OnlineStateNormalization, STATE_DIM},
 };
 
@@ -15,6 +16,9 @@ pub struct Transition {
     pub action: [f32; ACTION_DIM],
     pub reward: f32,
     pub next_state: AgentStateVector,
+    /// Whether `next_state` is a failure. Reaching the episode time limit is not a
+    /// failure: the world did not end, we just stopped watching, so it still bootstraps.
+    pub terminal: bool,
 }
 
 /// Fixed-capacity ring buffer of transitions, sampled from uniformly at random to
@@ -48,9 +52,8 @@ impl ReplayBuffer {
         self.data.len()
     }
 
-    /// Draw a random batch (without replacement) and return it as batched tensors
-    /// `(x, u, reward, x_next)`, each with a leading batch dimension. Returns `None`
-    /// if there aren't enough transitions yet.
+    /// Draw a random batch (without replacement) as batched tensors. Returns `None` if
+    /// there aren't enough transitions yet.
     ///
     /// States are normalized here rather than at collection time, so that every state
     /// in the returned batch shares the same (current) normalization statistics.
@@ -58,12 +61,7 @@ impl ReplayBuffer {
         &self,
         batch_size: usize,
         normalization: &OnlineStateNormalization,
-    ) -> Option<(
-        Tensor<Backend, 2>,
-        Tensor<Backend, 2>,
-        Tensor<Backend, 2>,
-        Tensor<Backend, 2>,
-    )> {
+    ) -> Option<ADHDPTrainData> {
         if batch_size == 0 || self.data.len() < batch_size {
             return None;
         }
@@ -75,6 +73,7 @@ impl ReplayBuffer {
         let mut actions = Vec::with_capacity(batch_size * ACTION_DIM);
         let mut rewards = Vec::with_capacity(batch_size);
         let mut next_states = Vec::with_capacity(batch_size * STATE_DIM);
+        let mut dones: Vec<f32> = Vec::with_capacity(batch_size);
 
         for i in indices.iter() {
             let t = &self.data[i];
@@ -82,6 +81,7 @@ impl ReplayBuffer {
             actions.extend_from_slice(&t.action);
             rewards.push(t.reward);
             normalization.normalize_into(&t.next_state, &mut next_states);
+            dones.push(if t.terminal { 1.0 } else { 0.0 });
         }
 
         let x = Tensor::<Backend, 1>::from_data(states.as_slice(), &DEVICE)
@@ -92,7 +92,15 @@ impl ReplayBuffer {
             .reshape([batch_size, 1]);
         let x_next = Tensor::<Backend, 1>::from_data(next_states.as_slice(), &DEVICE)
             .reshape([batch_size, STATE_DIM]);
+        let done =
+            Tensor::<Backend, 1>::from_data(dones.as_slice(), &DEVICE).reshape([batch_size, 1]);
 
-        Some((x, u, reward, x_next))
+        Some(ADHDPTrainData {
+            x,
+            u,
+            reward,
+            x_next,
+            done,
+        })
     }
 }

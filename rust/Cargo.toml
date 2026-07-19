@@ -6,6 +6,18 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib"]
 
+# Godot loads the `.debug.` library entry when running from the editor, so an
+# unoptimized dependency tree is what actually executes during training. Nearly all the
+# time is spent inside burn rather than in this crate, so optimizing dependencies while
+# leaving our own code unoptimized keeps panic messages and debug assertions useful at
+# almost no cost in speed.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [dependencies]
 burn = { version = "0.21.0", features = ["wgpu", "autodiff", "cuda", "flex"] }
 chrono = "0.4.45"
