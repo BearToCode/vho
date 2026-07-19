@@ -42,7 +42,7 @@ pub fn stability_reward_function(state: &AgentStateVector, config: &RewardConfig
     //     linear_velocity_reward
     // );
 
-    let reward = roll_reward * pitch_reward * angular_velocity_reward * linear_velocity_reward;
-
-    reward
+    let sum_reward = (roll_reward + pitch_reward + angular_velocity_reward + linear_velocity_reward) * 0.25;
+    
+    sum_reward
 }
