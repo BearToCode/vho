@@ -1,11 +1,9 @@
 use crate::rl::state::{AgentStateComponent, AgentStateVector};
 
-// At the range value, reward is around 1% of the maximum
 pub struct RewardConfig {
-    pub roll_range: f32,
-    pub pitch_range: f32,
-    pub angular_velocity_range: f32,
-    pub linear_velocity_range: f32,
+    pub altitude_weight: f32,
+    pub angular_velocity_weight: f32,
+    pub linear_velocity_weight: f32,
 }
 
 pub fn stability_reward_function(state: &AgentStateVector, config: &RewardConfig) -> f32 {
@@ -21,28 +19,15 @@ pub fn stability_reward_function(state: &AgentStateVector, config: &RewardConfig
     let v_z = state[Agent::LinearVelocityZ];
     let v = (v_x.powi(2) + v_y.powi(2) + v_z.powi(2)).sqrt();
 
-    let roll = state[Agent::RotationAngleX];
-    let pitch = state[Agent::RotationAngleZ];
+    let altitude = state[Agent::PositionErrorY];
 
-    // For now, only consider velocity and orientation
     let compute_reward = |value: f32, range: f32| -> f32 {
         (1.0 / (std::f32::consts::E * value / range).cosh()).powi(2)
     };
 
-    let roll_reward = compute_reward(roll, config.roll_range);
-    let pitch_reward = compute_reward(pitch, config.pitch_range);
-    let angular_velocity_reward = compute_reward(w, config.angular_velocity_range);
-    let linear_velocity_reward = compute_reward(v, config.linear_velocity_range);
+    let angular_velocity_reward = compute_reward(w, 0.5) * config.angular_velocity_weight;
+    let linear_velocity_reward = compute_reward(v, 2.0) * config.linear_velocity_weight;
+    let altitude_reward = compute_reward(altitude, 1.0) * config.altitude_weight;
 
-    // godot_print!(
-    //     "roll_reward: {}, pitch_reward: {}, angular_velocity_reward: {}, linear_velocity_reward: {}",
-    //     roll_reward,
-    //     pitch_reward,
-    //     angular_velocity_reward,
-    //     linear_velocity_reward
-    // );
-
-    let sum_reward = (roll_reward + pitch_reward + angular_velocity_reward + linear_velocity_reward) * 0.25;
-    
-    sum_reward
+    angular_velocity_reward * linear_velocity_reward * altitude_reward
 }

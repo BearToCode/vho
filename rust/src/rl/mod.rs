@@ -3,6 +3,7 @@ mod adhdp;
 mod agent;
 mod episode;
 mod networks;
+mod replay;
 mod reward;
 mod state;
 

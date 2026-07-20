@@ -36,25 +36,19 @@ pub struct ADHDPLosses {
     pub actor_loss: f32,
 }
 
-pub struct ADHDPTerminalTrainData {
+/// A minibatch of transitions sampled from the replay buffer.
+/// Each tensor has `batch_size` rows.
+pub struct ADHDPBatch {
+    /// States, `[batch, STATE_DIM]`.
     pub x: Tensor<Backend, 2>,
+    /// Actions taken, `[batch, ACTION_DIM]`.
     pub u: Tensor<Backend, 2>,
+    /// Rewards, `[batch, 1]`.
     pub reward: Tensor<Backend, 2>,
-}
-
-pub struct ADHDPStepTrainData {
-    pub x: Tensor<Backend, 2>,
-    pub u: Tensor<Backend, 2>,
-    pub reward: Tensor<Backend, 2>,
+    /// Next states, `[batch, STATE_DIM]`.
     pub x_next: Tensor<Backend, 2>,
-}
-
-#[allow(dead_code)]
-pub enum ADHDPTrainData {
-    #[allow(dead_code)]
-    Step(ADHDPStepTrainData),
-    #[allow(dead_code)]
-    Terminal(ADHDPTerminalTrainData),
+    /// Terminal flags (1.0 = terminal, no bootstrap), `[batch, 1]`.
+    pub done: Tensor<Backend, 2>,
 }
 
 /// Action Dependent Heuristic Dynamic Programming RL implementation.
@@ -111,9 +105,9 @@ impl ADHDP {
         };
     }
 
-    /// Train the models, returning their losses for the provided data.
-    pub fn train(&mut self, data: ADHDPTrainData) -> ADHDPLosses {
-        // 1. critic update
+    /// Train the models on one sampled minibatch, returning their losses.
+    pub fn train(&mut self, batch: ADHDPBatch) -> ADHDPLosses {
+        // 1. Critic update: regress Q(x, u) toward r + gamma * (1 - done) * Q'(x', a').
         let critic_update_actor = if self.config.use_target_networks {
             &self.target_actor
         } else {
@@ -125,20 +119,15 @@ impl ADHDP {
             &self.critic
         };
 
-        let (x, u, target) = match data {
-            ADHDPTrainData::Step(step) => {
-                let u_next = critic_update_actor.forward(step.x_next.clone()).detach();
-                let j_next = critic_update_critic.forward(step.x_next, u_next).detach();
-                let target = step.reward + j_next.mul_scalar(self.config.gamma);
+        let u_next = critic_update_actor.forward(batch.x_next.clone()).detach();
+        let j_next = critic_update_critic
+            .forward(batch.x_next.clone(), u_next)
+            .detach();
+        // Zero the bootstrap term for terminal transitions: (1 - done).
+        let not_done = batch.done.mul_scalar(-1.0).add_scalar(1.0);
+        let target = batch.reward + j_next.mul_scalar(self.config.gamma).mul(not_done);
 
-                (step.x, step.u, target)
-            }
-            ADHDPTrainData::Terminal(terminal) => {
-                let target = terminal.reward;
-
-                (terminal.x, terminal.u, target)
-            }
-        };
+        let (x, u) = (batch.x, batch.u);
 
         let j_pred = self.critic.forward(x.clone(), u.clone());
         let critic_loss = (target - j_pred).powf_scalar(2.0).mean();

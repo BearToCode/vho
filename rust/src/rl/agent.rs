@@ -1,22 +1,22 @@
-use burn::Tensor;
 use godot::prelude::*;
 use probability::prelude::*;
 
 use crate::{
     game::Game,
     rl::{
-        Backend, DEVICE,
         action::{OuNoise, perform_action},
-        adhdp::{ADHDP, ADHDPConfig, ADHDPStepTrainData, ADHDPTerminalTrainData, ADHDPTrainData},
+        adhdp::{ADHDP, ADHDPConfig},
         episode::Episode,
+        replay::ReplayBuffer,
         reward::{RewardConfig, stability_reward_function},
         state::{StateNormalizationConfig, get_agent_state, is_tumbling, normalize_state},
     },
 };
 
+/// CPU-side copy of the last state/action, used to build the next transition.
 struct StepData {
-    x: Tensor<Backend, 2>,
-    u: Tensor<Backend, 2>,
+    x: Vec<f32>,
+    u: Vec<f32>,
 }
 
 #[derive(GodotClass)]
@@ -44,6 +44,8 @@ pub struct Agent {
     noise_source: Option<source::Default>,
     /// Ornstein-Uhlenbeck exploration process.
     ou_noise: Option<OuNoise>,
+    /// Experience replay buffer feeding minibatches to the trainer.
+    replay_buffer: Option<ReplayBuffer>,
     /// Best episode reward seen so far (for saving the best policy).
     best_episode_reward: f32,
 
@@ -110,17 +112,11 @@ pub struct Agent {
 
     #[export_subgroup(name = "Reward")]
     #[export]
-    /// Roll range for reward calculation.
-    roll_range_deg: f32,
+    altitude_error_weight: f32,
     #[export]
-    /// Pitch range for reward calculation.
-    pitch_range_deg: f32,
+    linear_velocity_weight: f32,
     #[export]
-    /// Angular velocity range for reward calculation.
-    angular_velocity_range_deg: f32,
-    #[export]
-    /// Linear velocity range for reward calculation.
-    linear_velocity_range: f32,
+    angular_velocity_weight: f32,
 
     #[export_subgroup(name = "Noise")]
     #[export]
@@ -155,11 +151,22 @@ pub struct Agent {
     /// Angular velocity scale for state normalization.
     angular_velocity_scale: f32,
     #[export]
+    /// Position error scale for state normalization.
+    position_error_scale: f32,
+    #[export]
     /// Angle scale for state normalization.
     angle_scale: f32,
     #[export]
     /// Flap angle scale for state normalization.
     flap_angle_scale: f32,
+
+    #[export_subgroup(name = "Replay Buffer")]
+    #[export]
+    /// Maximum number of transitions stored in the replay buffer.
+    replay_buffer_capacity: i64,
+    #[export]
+    /// Minibatch size sampled from the replay buffer for each training step.
+    replay_batch_size: i64,
 }
 
 #[godot_api]
@@ -178,6 +185,7 @@ impl INode3D for Agent {
             run_directory: "".into(),
             noise_source: None,
             ou_noise: None,
+            replay_buffer: None,
             best_episode_reward: f32::NEG_INFINITY,
             noise_seed: 1,
 
@@ -203,10 +211,9 @@ impl INode3D for Agent {
             initial_linear_velocity_range: 1.0,
             initial_angular_velocity_range_deg: 10.0,
 
-            roll_range_deg: 45.0,
-            pitch_range_deg: 45.0,
-            angular_velocity_range_deg: 45.0,
-            linear_velocity_range: 2.0,
+            altitude_error_weight: 0.1,
+            linear_velocity_weight: 0.25,
+            angular_velocity_weight: 1.0,
 
             use_noise: true,
             noise_start: 0.4,
@@ -220,6 +227,10 @@ impl INode3D for Agent {
             angular_velocity_scale: 1.0,
             angle_scale: 1.0,
             flap_angle_scale: 1.0,
+            position_error_scale: 1.0,
+
+            replay_buffer_capacity: 100_000,
+            replay_batch_size: 128,
         }
     }
 
@@ -280,6 +291,12 @@ impl INode3D for Agent {
         self.noise_source = Some(source::default(self.noise_seed as u64));
         self.ou_noise = Some(OuNoise::new(0.15, 0.2));
 
+        // Experience replay buffer, seeded off the noise seed for reproducibility.
+        self.replay_buffer = Some(ReplayBuffer::new(
+            self.replay_buffer_capacity as usize,
+            self.noise_seed as u64,
+        ));
+
         self.adhdp = Some(adhdp);
     }
 
@@ -296,27 +313,47 @@ impl INode3D for Agent {
 
         let state = get_agent_state(game.clone());
 
+        let normalization_config = StateNormalizationConfig {
+            angular_velocity_scale: self.angular_velocity_scale,
+            linear_velocity_scale: self.linear_velocity_scale,
+            angle_scale: self.angle_scale,
+            flap_angle_scale: self.flap_angle_scale,
+            position_error_scale: self.position_error_scale,
+        };
+
         if self.episode.time > self.max_episode_time || is_tumbling(&state) {
             if is_tumbling(&state) {
-                // Perform one training step for the last state
+                // Store the terminal transition and train on a fresh minibatch.
                 if let Some(prev_step) = self.previous_step.as_ref() {
                     let time_left = self.max_episode_time - self.episode.time;
                     let reward_value = -time_left; // Penalize for tumbling, scaled by time left
-                    let reward =
-                        Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
                     self.episode.accumulated_reward += reward_value;
 
-                    if self.train {
-                        let losses =
-                            adhdp.train(ADHDPTrainData::Terminal(ADHDPTerminalTrainData {
-                                x: prev_step.x.clone(),
-                                u: prev_step.u.clone(),
-                                reward,
-                            }));
+                    // `x_next` is only stored for shape consistency; done = 1.0 zeroes
+                    // its bootstrap contribution during training.
+                    let x_next = normalize_state(&state, &normalization_config);
+                    let x_next_vec = x_next.into_data().to_vec::<f32>().unwrap();
+                    self.replay_buffer.as_mut().unwrap().push(
+                        &prev_step.x,
+                        &prev_step.u,
+                        reward_value,
+                        &x_next_vec,
+                        1.0,
+                    );
 
-                        self.episode.critic_loss_sum += losses.critic_loss;
-                        self.episode.actor_loss_sum += losses.actor_loss;
-                        self.episode.train_steps += 1;
+                    if self.train {
+                        if let Some(batch) = self
+                            .replay_buffer
+                            .as_mut()
+                            .unwrap()
+                            .sample(self.replay_batch_size as usize)
+                        {
+                            let losses = adhdp.train(batch);
+
+                            self.episode.critic_loss_sum += losses.critic_loss;
+                            self.episode.actor_loss_sum += losses.actor_loss;
+                            self.episode.train_steps += 1;
+                        }
                     }
                 }
             }
@@ -329,41 +366,43 @@ impl INode3D for Agent {
             return;
         }
 
-        let normalization_config = StateNormalizationConfig {
-            angular_velocity_scale: self.angular_velocity_scale,
-            linear_velocity_scale: self.linear_velocity_scale,
-            angle_scale: self.angle_scale,
-            flap_angle_scale: self.flap_angle_scale,
-        };
-
         let x = normalize_state(&state, &normalization_config);
+        let x_vec = x.clone().into_data().to_vec::<f32>().unwrap();
 
         if let Some(prev_step) = self.previous_step.as_ref() {
             let reward_config = RewardConfig {
-                roll_range: self.roll_range_deg.to_radians(),
-                pitch_range: self.pitch_range_deg.to_radians(),
-                angular_velocity_range: self.angular_velocity_range_deg.to_radians(),
-                linear_velocity_range: self.linear_velocity_range,
+                altitude_weight: self.altitude_error_weight,
+                linear_velocity_weight: self.linear_velocity_weight,
+                angular_velocity_weight: self.angular_velocity_weight,
             };
 
             let reward_value = stability_reward_function(&state, &reward_config);
             // godot_print!("Reward: {}", reward_value);
-            let reward = Tensor::<Backend, 1>::from_data([reward_value], &DEVICE).reshape([1, 1]);
+
+            // Store the (s, a, r, s') transition, then learn from a random minibatch.
+            self.replay_buffer.as_mut().unwrap().push(
+                &prev_step.x,
+                &prev_step.u,
+                reward_value,
+                &x_vec,
+                0.0,
+            );
+            self.episode.accumulated_reward += reward_value;
 
             if self.episode.steps % (self.train_every_n_frames as usize) == 0 && self.train {
-                let losses = adhdp.train(ADHDPTrainData::Step(ADHDPStepTrainData {
-                    x: prev_step.x.clone(),
-                    u: prev_step.u.clone(),
-                    reward,
-                    x_next: x.clone(),
-                }));
+                if let Some(batch) = self
+                    .replay_buffer
+                    .as_mut()
+                    .unwrap()
+                    .sample(self.replay_batch_size as usize)
+                {
+                    let losses = adhdp.train(batch);
 
-                self.episode.critic_loss_sum += losses.critic_loss;
-                self.episode.actor_loss_sum += losses.actor_loss;
-                self.episode.train_steps += 1;
+                    self.episode.critic_loss_sum += losses.critic_loss;
+                    self.episode.actor_loss_sum += losses.actor_loss;
+                    self.episode.train_steps += 1;
+                }
             }
-
-            self.episode.accumulated_reward += reward_value;
         }
 
         let mut u = adhdp.act(x.clone());
@@ -383,8 +422,9 @@ impl INode3D for Agent {
         }
         let u = u.clamp(-1.0, 1.0);
         perform_action(u.clone(), helicopter);
+        let u_vec = u.into_data().to_vec::<f32>().unwrap();
 
-        self.previous_step = Some(StepData { x, u });
+        self.previous_step = Some(StepData { x: x_vec, u: u_vec });
     }
 }
 

@@ -47,5 +47,9 @@ impl Game {
         helicopter.set_angular_velocity(helicopter_angular_velocity);
         helicopter.bind_mut().lat_flapping = 0.0;
         helicopter.bind_mut().lon_flapping = 0.0;
+        helicopter.bind_mut().collective = 0.0;
+        helicopter.bind_mut().longitudinal_cyclic = 0.0;
+        helicopter.bind_mut().lateral_cyclic = 0.0;
+        helicopter.bind_mut().tail_rotor_cyclic = 0.0;
     }
 }
