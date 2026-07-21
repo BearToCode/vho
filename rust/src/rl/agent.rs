@@ -1,3 +1,6 @@
+use std::fs::File;
+use std::io::{BufWriter, Write};
+
 use godot::prelude::*;
 use probability::prelude::*;
 
@@ -9,7 +12,10 @@ use crate::{
         episode::Episode,
         replay::ReplayBuffer,
         reward::{RewardConfig, stability_reward_function},
-        state::{StateNormalizationConfig, get_agent_state, is_tumbling, normalize_state},
+        state::{
+            STATE_COMPONENT_NAMES, STATE_DIM, StateNormalizationConfig, get_agent_state,
+            is_tumbling, normalize_state,
+        },
     },
 };
 
@@ -46,6 +52,8 @@ pub struct Agent {
     ou_noise: Option<OuNoise>,
     /// Experience replay buffer feeding minibatches to the trainer.
     replay_buffer: Option<ReplayBuffer>,
+    /// Buffered writer for the per-step raw (un-normalized) state log, if enabled.
+    state_log: Option<BufWriter<File>>,
     /// Best episode reward seen so far (for saving the best policy).
     best_episode_reward: f32,
 
@@ -167,6 +175,12 @@ pub struct Agent {
     #[export]
     /// Minibatch size sampled from the replay buffer for each training step.
     replay_batch_size: i64,
+
+    #[export_subgroup(name = "Logging")]
+    #[export]
+    /// Log the raw (un-normalized) state components of every step to
+    /// `states.csv` in the run directory, for offline scale selection.
+    log_states: bool,
 }
 
 #[godot_api]
@@ -186,6 +200,7 @@ impl INode3D for Agent {
             noise_source: None,
             ou_noise: None,
             replay_buffer: None,
+            state_log: None,
             best_episode_reward: f32::NEG_INFINITY,
             noise_seed: 1,
 
@@ -231,6 +246,8 @@ impl INode3D for Agent {
 
             replay_buffer_capacity: 100_000,
             replay_batch_size: 128,
+
+            log_states: true,
         }
     }
 
@@ -287,6 +304,21 @@ impl INode3D for Agent {
             );
         }
 
+        // Open the per-step raw state log for this run.
+        if self.log_states {
+            let path = format!("{}states.csv", self.run_directory);
+            match File::create(&path) {
+                Ok(file) => {
+                    let mut writer = BufWriter::new(file);
+                    if let Err(e) = writeln!(writer, "{}", STATE_COMPONENT_NAMES.join(",")) {
+                        godot_error!("Failed to write state log header: {e}");
+                    }
+                    self.state_log = Some(writer);
+                }
+                Err(e) => godot_error!("Failed to create state log \"{}\": {}", path, e),
+            }
+        }
+
         // Generate noise source and exploration process
         self.noise_source = Some(source::default(self.noise_seed as u64));
         self.ou_noise = Some(OuNoise::new(0.15, 0.2));
@@ -312,6 +344,20 @@ impl INode3D for Agent {
         let helicopter = game_bind.helicopter.clone().unwrap();
 
         let state = get_agent_state(game.clone());
+
+        // Record the raw (un-normalized) state so scales can be chosen offline.
+        if let Some(writer) = self.state_log.as_mut() {
+            let mut row = String::with_capacity(STATE_DIM * 12);
+            for i in 0..STATE_DIM {
+                if i > 0 {
+                    row.push(',');
+                }
+                row.push_str(&state[i].to_string());
+            }
+            if let Err(e) = writeln!(writer, "{}", row) {
+                godot_error!("Failed to write state log row: {e}");
+            }
+        }
 
         let normalization_config = StateNormalizationConfig {
             angular_velocity_scale: self.angular_velocity_scale,
@@ -459,6 +505,11 @@ impl Agent {
         // Restart the exploration process so each episode explores independently.
         if let Some(ou) = self.ou_noise.as_mut() {
             ou.reset();
+        }
+
+        // Flush the state log so data survives an abrupt shutdown.
+        if let Some(writer) = self.state_log.as_mut() {
+            let _ = writer.flush();
         }
 
         self.previous_episode = Some(self.episode.clone());

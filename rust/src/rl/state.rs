@@ -12,6 +12,22 @@ use crate::{
 /// Dimension of the state input of the model.
 pub const STATE_DIM: usize = 11;
 
+/// Human-readable names of the state components, in index order. Used as the
+/// header when logging raw states for offline analysis / scale selection.
+pub const STATE_COMPONENT_NAMES: [&str; STATE_DIM] = [
+    "linear_velocity_x",
+    "linear_velocity_y",
+    "linear_velocity_z",
+    "angular_velocity_x",
+    "angular_velocity_y",
+    "angular_velocity_z",
+    "rotation_angle_x",
+    "rotation_angle_z",
+    "longitudinal_flap_angle",
+    "lateral_flap_angle",
+    "position_error_y",
+];
+
 pub type AgentStateVector = SVector<f32, STATE_DIM>;
 
 /// Un-normalized agent state components.
