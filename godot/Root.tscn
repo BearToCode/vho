@@ -12,25 +12,24 @@ helicopter = NodePath("Helicopter")
 [node name="Agent" type="Agent" parent="." unique_id=326518141 node_paths=PackedStringArray("game")]
 game = NodePath("..")
 output_directory = "Q:\\Github\\vho\\output"
-train_every_n_frames = 8
-gamma = 0.99
-max_episode_time = 15.0
+train_every_n_frames = 4
+gamma = 0.975
+max_episode_time = 60.0
 critic_hidden_layers = Array[int]([64, 64])
 actor_hidden_layers = Array[int]([64, 64])
-actor_learning_rate = 0.0005
-critic_learning_rate = 0.001
-initial_roll_range_deg = 15.0
-initial_pitch_range_deg = 15.0
-initial_linear_velocity_range = 0.25
+actor_learning_rate = 4.999999999999997e-05
+critic_learning_rate = 9.999999999999999e-05
+initial_roll_range_deg = 10.0
+initial_pitch_range_deg = 10.0
+initial_linear_velocity_range = 0.1
 initial_angular_velocity_range_deg = 5.0
 altitude_error_weight = 2.0
 linear_velocity_weight = 2.0
-linear_velocity_scale = 2.0
+angular_velocity_weight = 2.0
 angular_velocity_scale = 0.5
-position_error_scale = 2.0
-angle_scale = 0.6999999999999978
-flap_angle_scale = 0.4999999999999985
-replay_batch_size = 256
+angle_scale = 0.6
+flap_angle_scale = 0.5
+replay_batch_size = 64
 
 [node name="Helicopter" parent="." unique_id=2044621016 instance=ExtResource("1_24d08")]
 transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 0, 0)
