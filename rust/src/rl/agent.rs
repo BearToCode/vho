@@ -322,42 +322,6 @@ impl INode3D for Agent {
         };
 
         if self.episode.time > self.max_episode_time || is_tumbling(&state) {
-            if is_tumbling(&state) {
-                // Store the terminal transition and train on a fresh minibatch.
-                if let Some(prev_step) = self.previous_step.as_ref() {
-                    let time_left = self.max_episode_time - self.episode.time;
-                    let reward_value = -time_left; // Penalize for tumbling, scaled by time left
-                    self.episode.accumulated_reward += reward_value;
-
-                    // `x_next` is only stored for shape consistency; done = 1.0 zeroes
-                    // its bootstrap contribution during training.
-                    let x_next = normalize_state(&state, &normalization_config);
-                    let x_next_vec = x_next.into_data().to_vec::<f32>().unwrap();
-                    self.replay_buffer.as_mut().unwrap().push(
-                        &prev_step.x,
-                        &prev_step.u,
-                        reward_value,
-                        &x_next_vec,
-                        1.0,
-                    );
-
-                    if self.train {
-                        if let Some(batch) = self
-                            .replay_buffer
-                            .as_mut()
-                            .unwrap()
-                            .sample(self.replay_batch_size as usize)
-                        {
-                            let losses = adhdp.train(batch);
-
-                            self.episode.critic_loss_sum += losses.critic_loss;
-                            self.episode.actor_loss_sum += losses.actor_loss;
-                            self.episode.train_steps += 1;
-                        }
-                    }
-                }
-            }
-
             self.episode.log(&self.run_directory);
             godot_print!("{}", self.episode);
             drop(game_bind);
