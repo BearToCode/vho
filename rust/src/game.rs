@@ -41,10 +41,11 @@ impl Game {
             .as_mut()
             .expect("Game is missing the helicopter");
 
-        helicopter.set_position(Vector3::ZERO);
-        helicopter.set_linear_velocity(helicopter_linear_velocity);
-        helicopter.set_rotation(helicopter_rotation);
-        helicopter.set_angular_velocity(helicopter_angular_velocity);
+        helicopter.bind_mut().reset_state = Some(crate::helicopter::HelicopterResetState {
+            rotation: helicopter_rotation,
+            linear_velocity: helicopter_linear_velocity,
+            angular_velocity: helicopter_angular_velocity,
+        });
         helicopter.bind_mut().lat_flapping = 0.0;
         helicopter.bind_mut().lon_flapping = 0.0;
         helicopter.bind_mut().collective = 0.0;

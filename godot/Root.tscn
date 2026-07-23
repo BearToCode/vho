@@ -12,14 +12,13 @@ helicopter = NodePath("Helicopter")
 [node name="Agent" type="Agent" parent="." unique_id=326518141 node_paths=PackedStringArray("game")]
 game = NodePath("..")
 output_directory = "Q:\\Github\\vho\\output"
-gamma = 0.99
+gamma = 0.975
 max_episode_time = 15.0
 critic_hidden_layers = Array[int]([64, 64])
 actor_hidden_layers = Array[int]([64, 64])
 critic_learning_rate = 0.0001
-initial_roll_range_deg = 5.0
-initial_pitch_range_deg = 5.0
-initial_linear_velocity_range = 0.1
+initial_roll_range_deg = 10.0
+initial_pitch_range_deg = 10.0
 initial_angular_velocity_range_deg = 5.0
 altitude_error_weight = 1.5
 linear_velocity_weight = 1.5

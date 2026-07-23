@@ -1,5 +1,11 @@
-use godot::classes::{IRigidBody3D, MeshInstance3D, RigidBody3D};
+use godot::classes::{IRigidBody3D, MeshInstance3D, PhysicsDirectBodyState3D, RigidBody3D};
 use godot::prelude::*;
+
+pub struct HelicopterResetState {
+    pub rotation: Vector3,
+    pub linear_velocity: Vector3,
+    pub angular_velocity: Vector3,
+}
 
 #[derive(GodotClass)]
 #[class(base=RigidBody3D)]
@@ -9,6 +15,8 @@ pub struct Helicopter {
     // Flapping dynamics
     pub lon_flapping: f32,
     pub lat_flapping: f32,
+
+    pub reset_state: Option<HelicopterResetState>,
 
     #[export_group(name = "Inputs")]
     #[export]
@@ -69,6 +77,8 @@ impl IRigidBody3D for Helicopter {
         Self {
             base,
 
+            reset_state: None,
+
             lon_flapping: 0.0,
             lat_flapping: 0.0,
 
@@ -99,7 +109,18 @@ impl IRigidBody3D for Helicopter {
 
     fn ready(&mut self) {}
 
-    fn physics_process(&mut self, delta: f32) {
+    fn integrate_forces(&mut self, state: Option<Gd<PhysicsDirectBodyState3D>>) {
+        let mut state = state.unwrap();
+        let delta = state.get_step();
+
+        // Reset the helicopter if a reset state is provided
+        if let Some(reset_state) = self.reset_state.take() {
+            self.base_mut().set_position(Vector3::ZERO);
+            self.base_mut().set_rotation(reset_state.rotation);
+            state.set_linear_velocity(reset_state.linear_velocity);
+            state.set_angular_velocity(reset_state.angular_velocity);
+        }
+
         // Retrieve state from the physics engine
         let local_to_global = self.base().get_transform().basis;
         let global_to_local = local_to_global.inverse();
@@ -138,9 +159,11 @@ impl IRigidBody3D for Helicopter {
         let local_force = Vector3::new(f_x, -f_z, -f_y);
         let local_torque = Vector3::new(m_x, -m_z, -m_y);
 
-        self.base_mut()
-            .apply_central_force(local_to_global * local_force);
-        self.base_mut().apply_torque(local_to_global * local_torque);
+        state
+            .apply_central_force_ex()
+            .force(local_to_global * local_force)
+            .done();
+        state.apply_torque(local_to_global * local_torque);
 
         // Animate the rotors if enabled
         if self.animate {
