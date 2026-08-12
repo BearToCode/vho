@@ -1,17 +1,14 @@
-use burn::Tensor;
+use burn::{Tensor, tensor::backend::Backend};
 use godot::prelude::*;
 use probability::{prelude::*, source::Source};
 
-use crate::{
-    helicopter::Helicopter,
-    rl::{Backend, DEVICE},
-};
+use crate::helicopter::Helicopter;
 
 /// Dimension of the action output of the model.
 pub const ACTION_DIM: usize = 4;
 
 /// Perform a certain action in the simulation.
-pub fn perform_action(u: Tensor<Backend, 2>, mut helicopter: Gd<Helicopter>) {
+pub fn perform_action<B: Backend>(u: Tensor<B, 2>, mut helicopter: Gd<Helicopter>) {
     let control_normalized = u
         .into_data()
         .to_vec::<f32>()
@@ -61,7 +58,13 @@ impl OuNoise {
 
     /// Advance the process by `dt` and return the current noise as a `[1, ACTION_DIM]`
     /// tensor. `scale` multiplies the output so callers can decay exploration over time.
-    pub fn sample<S: Source>(&mut self, dt: f32, scale: f32, source: &mut S) -> Tensor<Backend, 2> {
+    pub fn sample<S: Source, B: Backend>(
+        &mut self,
+        dt: f32,
+        scale: f32,
+        source: &mut S,
+        device: &B::Device,
+    ) -> Tensor<B, 2> {
         let distribution = Gaussian::new(0.0, 1.0);
         let mut out = [0.0f32; ACTION_DIM];
         for i in 0..ACTION_DIM {
@@ -70,6 +73,6 @@ impl OuNoise {
             out[i] = self.state[i] * scale;
         }
 
-        Tensor::<Backend, 1>::from_floats(out.as_slice(), &DEVICE).reshape([1, ACTION_DIM])
+        Tensor::<B, 1>::from_floats(out.as_slice(), device).reshape([1, ACTION_DIM])
     }
 }

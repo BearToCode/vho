@@ -1,5 +1,5 @@
 use crate::rl::{
-    Backend, DEVICE,
+    AutodiffBackend, DEVICE,
     action::ACTION_DIM,
     networks::{ActorModel, CriticModel},
     state::STATE_DIM,
@@ -40,32 +40,32 @@ pub struct ADHDPLosses {
 /// Each tensor has `batch_size` rows.
 pub struct ADHDPBatch {
     /// States, `[batch, STATE_DIM]`.
-    pub x: Tensor<Backend, 2>,
+    pub x: Tensor<AutodiffBackend, 2>,
     /// Actions taken, `[batch, ACTION_DIM]`.
-    pub u: Tensor<Backend, 2>,
+    pub u: Tensor<AutodiffBackend, 2>,
     /// Rewards, `[batch, 1]`.
-    pub reward: Tensor<Backend, 2>,
+    pub reward: Tensor<AutodiffBackend, 2>,
     /// Next states, `[batch, STATE_DIM]`.
-    pub x_next: Tensor<Backend, 2>,
+    pub x_next: Tensor<AutodiffBackend, 2>,
     /// Terminal flags (1.0 = terminal, no bootstrap), `[batch, 1]`.
-    pub done: Tensor<Backend, 2>,
+    pub done: Tensor<AutodiffBackend, 2>,
 }
 
 /// Action Dependent Heuristic Dynamic Programming RL implementation.
 pub struct ADHDP {
     /// The online actor model.
-    actor: ActorModel<Backend>,
+    actor: ActorModel<AutodiffBackend>,
     /// The online critic model.
-    critic: CriticModel<Backend>,
+    critic: CriticModel<AutodiffBackend>,
     /// The target actor model, used for stabilizing training.
-    target_actor: ActorModel<Backend>,
+    target_actor: ActorModel<AutodiffBackend>,
     /// The target critic model, used for stabilizing training.
-    target_critic: CriticModel<Backend>,
+    target_critic: CriticModel<AutodiffBackend>,
 
     /// Adam optimizer for the actor model.
-    actor_optimizer: OptimizerAdaptor<Adam, ActorModel<Backend>, Backend>,
+    actor_optimizer: OptimizerAdaptor<Adam, ActorModel<AutodiffBackend>, AutodiffBackend>,
     /// Adam optimizer for the critic model.
-    critic_optimizer: OptimizerAdaptor<Adam, CriticModel<Backend>, Backend>,
+    critic_optimizer: OptimizerAdaptor<Adam, CriticModel<AutodiffBackend>, AutodiffBackend>,
 
     /// Configuration of ADHDP.
     pub config: ADHDPConfig,
@@ -73,9 +73,13 @@ pub struct ADHDP {
 
 impl ADHDP {
     pub fn new(config: ADHDPConfig) -> Self {
-        let actor =
-            ActorModel::<Backend>::new(STATE_DIM, ACTION_DIM, &config.actor_hidden_layers, &DEVICE);
-        let critic = CriticModel::<Backend>::new(
+        let actor = ActorModel::<AutodiffBackend>::new(
+            STATE_DIM,
+            ACTION_DIM,
+            &config.actor_hidden_layers,
+            &DEVICE,
+        );
+        let critic = CriticModel::<AutodiffBackend>::new(
             STATE_DIM,
             ACTION_DIM,
             &config.critic_hidden_layers,
@@ -176,7 +180,7 @@ impl ADHDP {
     }
 
     /// Perform one action based on a state.
-    pub fn act(&self, x: Tensor<Backend, 2>) -> Tensor<Backend, 2> {
+    pub fn act(&self, x: Tensor<AutodiffBackend, 2>) -> Tensor<AutodiffBackend, 2> {
         self.actor.forward(x)
     }
 
@@ -207,21 +211,24 @@ impl ADHDP {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
 
         match self.actor.clone().load_file(path, &recorder, &DEVICE) {
-            Ok(actor) => self.actor = actor,
-            Err(e) => godot_print!("Failed to load actor: {e}"),
+            Ok(actor) => {
+                self.actor = actor;
+                godot_print!("Loaded actor model from {path}");
+            }
+            Err(e) => godot_print!("Failed to load actor from {path}: {e}"),
         }
-
-        godot_print!("Loaded critic model from {path}");
     }
 
     /// Load critic weights from disk, replacing the current model
     pub fn load_critic(&mut self, path: &str) {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-        match self.critic.clone().load_file(path, &recorder, &DEVICE) {
-            Ok(critic) => self.critic = critic,
-            Err(e) => godot_print!("Failed to load critic: {e}"),
-        }
 
-        godot_print!("Loaded critic model from {path}");
+        match self.critic.clone().load_file(path, &recorder, &DEVICE) {
+            Ok(critic) => {
+                self.critic = critic;
+                godot_print!("Loaded critic model from {path}");
+            }
+            Err(e) => godot_print!("Failed to load critic from {path}: {e}"),
+        }
     }
 }

@@ -1,6 +1,6 @@
 use burn::Tensor;
 
-use crate::rl::{Backend, DEVICE, action::ACTION_DIM, adhdp::ADHDPBatch, state::STATE_DIM};
+use crate::rl::{AutodiffBackend, DEVICE, action::ACTION_DIM, adhdp::ADHDPBatch, state::STATE_DIM};
 
 /// A single stored transition, kept CPU-side so sampling is cheap and does not
 /// pin GPU memory.
@@ -98,15 +98,15 @@ impl ReplayBuffer {
             dones.push(t.done);
         }
 
-        let x = Tensor::<Backend, 1>::from_floats(xs.as_slice(), &DEVICE)
+        let x = Tensor::<AutodiffBackend, 1>::from_floats(xs.as_slice(), &DEVICE)
             .reshape([batch_size, STATE_DIM]);
-        let u = Tensor::<Backend, 1>::from_floats(us.as_slice(), &DEVICE)
+        let u = Tensor::<AutodiffBackend, 1>::from_floats(us.as_slice(), &DEVICE)
             .reshape([batch_size, ACTION_DIM]);
-        let reward = Tensor::<Backend, 1>::from_floats(rewards.as_slice(), &DEVICE)
+        let reward = Tensor::<AutodiffBackend, 1>::from_floats(rewards.as_slice(), &DEVICE)
             .reshape([batch_size, 1]);
-        let x_next = Tensor::<Backend, 1>::from_floats(x_nexts.as_slice(), &DEVICE)
+        let x_next = Tensor::<AutodiffBackend, 1>::from_floats(x_nexts.as_slice(), &DEVICE)
             .reshape([batch_size, STATE_DIM]);
-        let done = Tensor::<Backend, 1>::from_floats(dones.as_slice(), &DEVICE)
+        let done = Tensor::<AutodiffBackend, 1>::from_floats(dones.as_slice(), &DEVICE)
             .reshape([batch_size, 1]);
 
         Some(ADHDPBatch {

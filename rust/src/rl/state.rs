@@ -1,13 +1,10 @@
 use std::ops::{Index, IndexMut};
 
-use burn::Tensor;
+use burn::{Tensor, tensor::backend::Backend};
 use godot::prelude::*;
 use nalgebra::SVector;
 
-use crate::{
-    game::Game,
-    rl::{Backend, DEVICE},
-};
+use crate::game::Game;
 
 /// Dimension of the state input of the model.
 pub const STATE_DIM: usize = 11;
@@ -65,7 +62,6 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     // Helicopter transform data
     let global_to_local = helicopter.get_transform().basis.inverse();
 
-    let helicopter_rotation = helicopter.get_rotation();
     let helicopter_position = helicopter.get_global_position();
 
     let helicopter_linear_velocity = helicopter.get_linear_velocity();
@@ -73,6 +69,13 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
 
     let helicopter_local_linear_velocity = global_to_local * helicopter_linear_velocity;
     let helicopter_local_angular_velocity = global_to_local * helicopter_angular_velocity;
+
+    let local_up = global_to_local * Vector3::UP;
+
+    // Tilt of the body relative to world-up, expressed in body axes.
+    // (sign/axis convention may need adjusting to match your existing definition of roll/pitch)
+    let roll = local_up.x.atan2(local_up.y);
+    let pitch = (-local_up.z).atan2(local_up.y);
 
     // Copy data onto agent state vector
     type Agent = AgentStateComponent;
@@ -83,8 +86,8 @@ pub fn get_agent_state(game: Gd<Game>) -> AgentStateVector {
     agent_state[Agent::AngularVelocityX] = helicopter_local_angular_velocity.x;
     agent_state[Agent::AngularVelocityY] = helicopter_local_angular_velocity.y;
     agent_state[Agent::AngularVelocityZ] = helicopter_local_angular_velocity.z;
-    agent_state[Agent::RotationAngleX] = helicopter_rotation.x;
-    agent_state[Agent::RotationAngleZ] = helicopter_rotation.z;
+    agent_state[Agent::RotationAngleX] = roll;
+    agent_state[Agent::RotationAngleZ] = pitch;
     agent_state[Agent::LongitudinalFlapAngle] = helicopter_bind.lon_flapping;
     agent_state[Agent::LateralFlapAngle] = helicopter_bind.lat_flapping;
     agent_state[Agent::PositionErrorY] = helicopter_position.y;
@@ -102,10 +105,11 @@ pub struct StateNormalizationConfig {
 }
 
 /// Get the normalized state for RL.
-pub fn normalize_state(
+pub fn normalize_state<B: Backend>(
     agent_state: &AgentStateVector,
     config: &StateNormalizationConfig,
-) -> Tensor<Backend, 2> {
+    device: &B::Device,
+) -> Tensor<B, 2> {
     type Agent = AgentStateComponent;
 
     let angle_to_minus_plus_pi = |angle: f32| -> f32 {
@@ -121,7 +125,7 @@ pub fn normalize_state(
 
     let normalize = |value: f32, scale: f32| -> f32 { (value / scale).tanh() };
 
-    let normalized = Tensor::<Backend, 1>::from_data(
+    let normalized = Tensor::<B, 1>::from_data(
         [
             normalize(
                 agent_state[Agent::LinearVelocityX],
@@ -168,14 +172,11 @@ pub fn normalize_state(
                 config.position_error_scale,
             ),
         ],
-        &DEVICE,
+        device,
     )
     .reshape([1, STATE_DIM]);
 
-    // godot_print!("State: {}", agent_state);
-    // godot_print!("Normalized: {}", normalized);
-
-    return normalized;
+    normalized
 }
 
 pub fn is_tumbling(agent_state: &AgentStateVector) -> bool {

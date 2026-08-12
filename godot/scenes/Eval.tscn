@@ -1,0 +1,41 @@
+[gd_scene format=3 uid="uid://dirxermudnwm1"]
+
+[ext_resource type="PackedScene" uid="uid://cn2qtnumd5d4q" path="res://scenes/Helicopter.tscn" id="1_mqurr"]
+
+[sub_resource type="Environment" id="Environment_mqurr"]
+background_mode = 1
+background_color = Color(0.48487204, 0.610455, 0.68117326, 1)
+
+[node name="Eval" type="Game" unique_id=638344012 node_paths=PackedStringArray("helicopter")]
+helicopter = NodePath("Helicopter")
+
+[node name="Helicopter" parent="." unique_id=908961530 instance=ExtResource("1_mqurr")]
+transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 0, 0)
+can_sleep = false
+script = null
+
+[node name="Camera3D" type="Camera3D" parent="Helicopter" unique_id=870637761]
+transform = Transform3D(-4.3711385e-08, 0.07634771, -0.9970813, 0, 0.9970813, 0.07634771, 1, 3.3372642e-09, -4.3583807e-08, -12.018648, 7.771945, 0.80570644)
+current = true
+
+[node name="Evaluator" type="Evaluator" parent="." unique_id=1539519943 node_paths=PackedStringArray("game")]
+game = NodePath("..")
+max_episode_time = 2.999999999999991
+actor_model_path = "/home/davide/University/tudelft/bio-inspired-intelligence-and-learning/vho/output/run_2026_08_12__12_46_34/actor_best.mpk"
+actor_hidden_layers = Array[int]([64, 64])
+initial_roll_range_deg = 2.999999999999991
+initial_pitch_range_deg = 2.999999999999991
+initial_linear_velocity_range = 0.999999999999997
+initial_angular_velocity_range_deg = 0.999999999999997
+max_roll_deg = 9.99999999999997
+max_pitch_deg = 9.99999999999997
+max_linear_velocity = 0.999999999999997
+max_angular_velocity_deg = 9.99999999999997
+linear_velocity_scale = 0.999999999999997
+angular_velocity_scale = 0.4999999999999985
+position_error_scale = 0.999999999999997
+angle_scale = 0.5999999999999982
+flap_angle_scale = 0.4999999999999985
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=654709848]
+environment = SubResource("Environment_mqurr")

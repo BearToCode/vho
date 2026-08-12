@@ -4,6 +4,7 @@ use probability::prelude::*;
 use crate::{
     game::Game,
     rl::{
+        DEVICE,
         action::{OuNoise, perform_action},
         adhdp::{ADHDP, ADHDPConfig},
         episode::Episode,
@@ -330,7 +331,7 @@ impl INode3D for Agent {
             return;
         }
 
-        let x = normalize_state(&state, &normalization_config);
+        let x = normalize_state(&state, &normalization_config, &DEVICE);
         let x_vec = x.clone().into_data().to_vec::<f32>().unwrap();
 
         if let Some(prev_step) = self.previous_step.as_ref() {
@@ -380,7 +381,7 @@ impl INode3D for Agent {
             if let (Some(ou), Some(noise_source)) =
                 (self.ou_noise.as_mut(), self.noise_source.as_mut())
             {
-                let noise = ou.sample(delta, scale, noise_source);
+                let noise = ou.sample(delta, scale, noise_source, &DEVICE);
                 u = u + noise;
             }
         }
