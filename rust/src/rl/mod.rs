@@ -4,6 +4,7 @@ mod agent;
 mod episode;
 mod evaluator;
 mod networks;
+mod recorder;
 mod replay;
 mod reward;
 mod state;
