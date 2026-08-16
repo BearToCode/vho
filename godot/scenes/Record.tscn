@@ -1,0 +1,43 @@
+[gd_scene format=3 uid="uid://68j3jfb13n0a"]
+
+[ext_resource type="PackedScene" uid="uid://cn2qtnumd5d4q" path="res://scenes/Helicopter.tscn" id="1_w867w"]
+
+[sub_resource type="Environment" id="Environment_w867w"]
+background_mode = 1
+background_color = Color(0.48487204, 0.610455, 0.68117326, 1)
+
+[node name="Record" type="Game" unique_id=292712184 node_paths=PackedStringArray("helicopter")]
+helicopter = NodePath("Helicopter")
+
+[node name="Recorder" type="Recorder" parent="." unique_id=158278212 node_paths=PackedStringArray("game")]
+game = NodePath("..")
+actor_model_path = "Q:\\Github\\vho\\postprocessing\\data\\final-run\\actor_best.mpk"
+actor_hidden_layers = Array[int]([16, 16])
+output_csv_path = "Q:\\Github\\vho\\output\\run.csv"
+max_time = 10.0
+linear_velocity_scale = 1.0
+angular_velocity_scale = 0.5
+position_error_scale = 1.0
+angle_scale = 0.6
+flap_angle_scale = 0.5
+
+[node name="Helicopter" parent="." unique_id=908961530 instance=ExtResource("1_w867w")]
+transform = Transform3D(0.99999994, 0, 0, 0, 0.99999994, 0, 0, 0, 1, 0, 0, 0)
+can_sleep = false
+linear_velocity = Vector3(0, 0, 1)
+script = null
+
+[node name="Camera3D" type="Camera3D" parent="Helicopter" unique_id=1425629776]
+transform = Transform3D(-4.3711385e-08, 0.07634771, -0.9970813, 0, 0.9970813, 0.07634771, 1, 3.3372642e-09, -4.3583807e-08, -12.018648, 7.771945, 0.80570644)
+current = true
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=920723610]
+transform = Transform3D(-0.78630626, 0.2728267, -0.5543358, 0.032866668, 0.9144206, 0.403429, 0.6169622, 0.2989995, -0.72798145, -7.651084, 7.126119, -8.396711)
+shadow_enabled = true
+directional_shadow_mode = 1
+directional_shadow_split_1 = 0.194
+directional_shadow_blend_splits = true
+directional_shadow_fade_start = 0.687
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=842833268]
+environment = SubResource("Environment_w867w")

@@ -11,12 +11,13 @@ helicopter = NodePath("Helicopter")
 
 [node name="Agent" type="Agent" parent="." unique_id=326518141 node_paths=PackedStringArray("game")]
 game = NodePath("..")
-output_directory = "/home/davide/University/tudelft/bio-inspired-intelligence-and-learning/vho/output"
+output_directory = "Q:\\Github\\vho\\output"
 gamma = 0.975
 max_episode_time = 2.999999999999991
-critic_hidden_layers = Array[int]([64, 64])
-actor_hidden_layers = Array[int]([64, 64])
-critic_learning_rate = 9.999999999999967e-05
+critic_hidden_layers = Array[int]([16, 16])
+actor_hidden_layers = Array[int]([16, 16])
+actor_learning_rate = 0.001
+critic_learning_rate = 0.001
 initial_roll_range_deg = 10.0
 initial_pitch_range_deg = 10.0
 initial_angular_velocity_range_deg = 5.0

@@ -127,12 +127,8 @@ impl INode3D for Recorder {
         );
         godot_print!("Loaded actor model from {}", self.actor_model_path);
 
-        // Godot's `res://` / `user://` paths need resolving to an OS path for std::fs.
-
-        // let os_path = ProjectSettings::singleton().globalize_path(&self.output_csv_path.clone());
-
-        let file = File::create(os_path.to_string())
-            .unwrap_or_else(|e| panic!("Failed to create CSV at {}: {}", os_path, e));
+        let file = File::create(self.output_csv_path.to_string())
+            .unwrap_or_else(|e| panic!("Failed to create CSV at {}: {}", self.output_csv_path, e));
         let mut writer = BufWriter::new(file);
 
         let mut header = vec![
@@ -163,7 +159,7 @@ impl INode3D for Recorder {
             .unwrap_or_else(|e| panic!("Failed to write CSV header: {e}"));
 
         self.writer = Some(writer);
-        godot_print!("Recording to {}", os_path);
+        godot_print!("Recording to {}", self.output_csv_path);
     }
 
     fn physics_process(&mut self, delta: f32) {
